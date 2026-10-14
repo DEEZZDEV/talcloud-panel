@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Jetons de couleur (HSL, à la shadcn). Une seule couleur d'accent (bleu) ; le reste est neutre.
+ * Les couleurs d'état (success / warning / danger / info) sont réglées par thème pour rester lisibles en texte (AA).
+ */
+@layer base {
+  :root {
+    --background: 0 0% 98.4%;
+    --foreground: 240 10% 6%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 6%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 6%;
+    --sidebar: 240 5% 96.5%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --link: 221 83% 45%;
+    --secondary: 240 5% 94%;
+    --secondary-foreground: 240 6% 12%;
+    --muted: 240 5% 95.5%;
+    --muted-foreground: 240 4% 40%;
+    --subtle: 240 4% 54%;
+    --accent: 240 5% 93.5%;
+    --accent-foreground: 240 6% 10%;
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 146 68% 27%;
+    --warning: 30 92% 33%;
+    --danger: 0 72% 44%;
+    --info: 215 80% 42%;
+    --border: 240 6% 89%;
+    --input: 240 6% 84%;
+    --ring: 221 83% 53%;
+    --radius: 0.625rem;
+
+    --shadow-card: 0 1px 2px 0 rgb(16 16 20 / 0.04);
+    --shadow-pop: 0 12px 32px -8px rgb(16 16 20 / 0.16), 0 2px 6px -2px rgb(16 16 20 / 0.08);
+
+    /* Graphiques — palette catégorielle validée (ordre fixe : 1 CA, 2 coûts, 3 bénéfice). */
+    --chart-1: #2a78d6;
+    --chart-2: #eb6834;
+    --chart-3: #1baf7a;
+    --chart-4: #6250d6;
+    --chart-grid: #e7e7ea;
+    --chart-axis: #7b7b85;
+    --chart-surface: #ffffff;
+  }
+
+  .dark {
+    --background: 240 7% 4.6%;
+    --foreground: 0 0% 96%;
+    --card: 240 6% 7.4%;
+    --card-foreground: 0 0% 96%;
+    --popover: 240 6% 8.6%;
+    --popover-foreground: 0 0% 96%;
+    --sidebar: 240 7% 5.8%;
+    --primary: 221 83% 55%;
+    --primary-foreground: 0 0% 100%;
+    --link: 217 92% 70%;
+    --secondary: 240 5% 13%;
+    --secondary-foreground: 0 0% 94%;
+    --muted: 240 5% 11.5%;
+    --muted-foreground: 240 5% 65%;
+    --subtle: 240 4% 48%;
+    --accent: 240 5% 13.5%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 0 70% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 146 58% 55%;
+    --warning: 38 92% 60%;
+    --danger: 0 86% 70%;
+    --info: 213 94% 70%;
+    --border: 240 5% 14.5%;
+    --input: 240 5% 19%;
+    --ring: 217 92% 62%;
+
+    --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+    --shadow-pop: 0 16px 40px -8px rgb(0 0 0 / 0.6), 0 2px 8px -2px rgb(0 0 0 / 0.4);
+
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #9085e9;
+    --chart-grid: #222226;
+    --chart-axis: #8a8a94;
+    --chart-surface: #121214;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    @apply bg-background font-sans text-sm text-foreground antialiased;
+    font-feature-settings: 'ss01', 'cv11';
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background-color: hsl(var(--primary) / 0.28);
+  }
+
+  /* Focus clavier visible partout, y compris sur les éléments natifs. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+
+  /* Barres de défilement discrètes. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--input)) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--input));
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  /* Zone de sécurité des téléphones à encoche. */
+  .pb-safe {
+    padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  }
+  .pt-safe {
+    padding-top: max(env(safe-area-inset-top), 0px);
+  }
+  /* Halo très discret derrière l'écran de connexion. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.6) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.6) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 35%, #000 20%, transparent 75%);
+  }
+}
+
+/* Recharts : aucun contour de focus parasite sur le conteneur SVG. */
+.recharts-wrapper:focus,
+.recharts-surface:focus,
+.recharts-wrapper *:focus:not(:focus-visible) {
+  outline: none;
+}

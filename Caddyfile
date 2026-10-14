@@ -1,0 +1,10 @@
+# Caddy obtient et renouvelle automatiquement le certificat HTTPS (Let's Encrypt) pour {$DOMAIN}
+# et redirige tout le HTTP vers HTTPS. Les en-têtes X-Forwarded-* envoyés par les clients sont ignorés.
+{$DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy panel:8080 {
+		# Flux temps réel (Server-Sent Events) : pas de mise en tampon.
+		flush_interval -1
+	}
+}
