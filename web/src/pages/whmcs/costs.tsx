@@ -75,8 +75,14 @@ function monthlyShare(cost: Cost, month: string): number {
 }
 
 function period(cost: Cost): string {
-  if (cost.recurrence === 'one_time') return formatMonth(cost.startMonth);
-  return cost.endMonth ? `${formatMonth(cost.startMonth, 'short')} → ${formatMonth(cost.endMonth, 'short')}` : `Depuis ${formatMonth(cost.startMonth, 'short')}`;
+  const text =
+    cost.recurrence === 'one_time'
+      ? formatMonth(cost.startMonth)
+      : cost.endMonth
+        ? `${formatMonth(cost.startMonth, 'short')} → ${formatMonth(cost.endMonth, 'short')}`
+        : `Depuis ${formatMonth(cost.startMonth, 'short')}`;
+  // Majuscule initiale uniquement (pas « Depuis Nov. 25 »).
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function CostForm({ open, cost, currency, onClose }: { open: boolean; cost: Cost | null; currency: string; onClose: () => void }) {
@@ -313,7 +319,7 @@ export default function WhmcsCostsPage() {
     },
     { key: 'category', header: 'Catégorie', cell: (cost) => <Badge>{COST_CATEGORY_LABELS[cost.category] ?? cost.category}</Badge> },
     { key: 'recurrence', header: 'Récurrence', cell: (cost) => <span className="text-muted-foreground">{COST_RECURRENCE_LABELS[cost.recurrence] ?? cost.recurrence}</span> },
-    { key: 'period', header: 'Période', skeleton: 'w-32', cell: (cost) => <span className="whitespace-nowrap capitalize text-muted-foreground">{period(cost)}</span> },
+    { key: 'period', header: 'Période', skeleton: 'w-32', cell: (cost) => <span className="whitespace-nowrap text-muted-foreground">{period(cost)}</span> },
     { key: 'amount', header: 'Montant', align: 'right', cell: (cost) => <span className="tabular whitespace-nowrap font-semibold">{formatMoney(cost.amount, currency)}</span> },
     {
       key: 'share',
@@ -389,7 +395,7 @@ export default function WhmcsCostsPage() {
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                       <Badge>{COST_CATEGORY_LABELS[cost.category] ?? cost.category}</Badge>
                       <span>{COST_RECURRENCE_LABELS[cost.recurrence]}</span>
-                      <span className="capitalize">· {period(cost)}</span>
+                      <span>· {period(cost)}</span>
                     </div>
                     {cost.notes ? <p className="line-clamp-2 text-xs text-muted-foreground">{cost.notes}</p> : null}
                   </div>

@@ -5,7 +5,9 @@ import MailComposer from 'nodemailer/lib/mail-composer';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decrypt } from '../src/core/crypto.js';
 import { db } from '../src/db/index.js';
-import { advance, Browser, buildTestApp, createTestAdmin, uniqueIp, useFakeClock, type TestAdmin } from './helpers.js';
+import { outbox } from '../src/core/mailer.js';
+import { accountAlertText } from '../src/modules/mail/index.js';
+import { advance, alertMails, Browser, buildTestApp, createTestAdmin, uniqueIp, useFakeClock, type TestAdmin } from './helpers.js';
 
 // ───────────────────────────── Faux serveurs IMAP / SMTP ─────────────────────────────
 
@@ -534,6 +536,8 @@ describe('comptes de messagerie', () => {
     await stepUp();
     const support = await browser.post<MailAccount>('/api/mail/accounts', supportInput);
     expect(support.status).toBe(201);
+    // Les listes sont triées par date de création (les identifiants sont aléatoires).
+    advance(1_000);
     const billing = await browser.post<MailAccount>('/api/mail/accounts', billingInput);
     expect(billing.status).toBe(201);
     supportId = support.body.data.id;
@@ -551,7 +555,9 @@ describe('comptes de messagerie', () => {
       smtpSecure: false,
       username: 'support-login',
       hasPassword: true,
-      createdAt: new Date(Date.now()).toISOString(),
+      createdAt: new Date(Date.now() - 1_000).toISOString(),
+      visibility: 'shared',
+      ownedByMe: false,
     });
 
     const list = await browser.get<MailAccount[]>('/api/mail/accounts');
@@ -1316,5 +1322,269 @@ describe('robustesse', () => {
     const summary = await browser.get<MailUnreadSummary>('/api/mail/unread-summary');
     expect(summary.body.data.accounts.map((account) => account.accountId)).toEqual([supportId]);
     expect(mock.calls.every((call) => call.host === 'imap.support.test')).toBe(true);
+  });
+});
+
+// ───────────────────────────── Boîtes personnelles ─────────────────────────────
+
+describe('boîtes personnelles et partagées', () => {
+  const PERSONAL_ADDRESS = 'alice.perso@exemple.test';
+  const personalInput = {
+    label: 'Perso Alice',
+    address: PERSONAL_ADDRESS,
+    imapHost: 'imap.alice.test',
+    imapPort: 993,
+    imapSecure: true,
+    smtpHost: 'smtp.alice.test',
+    smtpPort: 465,
+    smtpSecure: true,
+    username: 'alice-login',
+    password: 'mdp-Alice-Perso-3',
+    visibility: 'personal',
+  };
+  let personalId: number;
+  let bobBrowser: Browser;
+
+  /** Serveur IMAP de la boîte personnelle d'Alice : un message confidentiel avec pièce jointe. */
+  async function aliceServer(): Promise<FakeServer> {
+    const message = await invoiceMessage(77);
+    message.envelope.subject = 'Résultats médicaux confidentiels';
+    return {
+      password: 'mdp-Alice-Perso-3',
+      secure: true,
+      connectError: null,
+      folders: [
+        { path: 'INBOX', name: 'INBOX' },
+        { path: 'Envoyés', name: 'Envoyés', specialUse: '\\Sent' },
+        { path: 'Corbeille', name: 'Corbeille', specialUse: '\\Trash' },
+      ],
+      boxes: new Map([
+        ['INBOX', [message]],
+        ['Envoyés', []],
+        ['Corbeille', []],
+      ]),
+      appended: [],
+    };
+  }
+
+  beforeEach(async () => {
+    mock.servers.set('imap.alice.test', await aliceServer());
+    // La session principale reste active malgré les avances d'horloge des autres blocs.
+    expect((await browser.get('/api/mail/accounts')).status).toBe(200);
+    if (bobBrowser) expect((await bobBrowser.get('/api/mail/accounts')).status).toBe(200);
+  });
+
+  /** Toutes les routes /api/mail/accounts/:id/** — la règle d'accès doit valoir pour chacune. */
+  const everyRoute = (id: number) =>
+    [
+      ['GET', `/api/mail/accounts/${id}/folders`],
+      ['GET', `/api/mail/accounts/${id}/messages`],
+      ['GET', `/api/mail/accounts/${id}/messages?search=confidentiel`],
+      ['GET', `/api/mail/accounts/${id}/messages/77`],
+      ['GET', `/api/mail/accounts/${id}/messages/77/attachments/2`],
+      ['POST', `/api/mail/accounts/${id}/messages/77/flags`, { seen: true }],
+      ['POST', `/api/mail/accounts/${id}/messages/77/move`, { destination: 'Corbeille' }],
+      ['DELETE', `/api/mail/accounts/${id}/messages/77`],
+      ['POST', `/api/mail/accounts/${id}/send`, { to: ['x@exemple.test'], subject: 'Objet', text: 'Texte' }],
+      ['POST', `/api/mail/accounts/${id}/send`, { to: ['x@exemple.test'], subject: 'Re', text: 'Texte', inReplyTo: { folder: 'INBOX', uid: 77 } }],
+      ['POST', `/api/mail/accounts/${id}/test`, {}],
+      ['PUT', `/api/mail/accounts/${id}`, { ...personalInput, label: 'Détournée', visibility: 'shared' }],
+      ['PUT', `/api/mail/accounts/${id}`, { ...personalInput, visibility: 'personal' }],
+      ['DELETE', `/api/mail/accounts/${id}`],
+    ] as [method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: Record<string, unknown>][];
+
+  async function call(target: Browser, method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, body?: Record<string, unknown>) {
+    if (method === 'GET') return target.get(url);
+    if (method === 'DELETE') return target.delete(url);
+    if (method === 'PUT') return target.put(url, body ?? {});
+    return target.post(url, body ?? {});
+  }
+
+  it('une boîte créée « personnelle » appartient à son créateur ; « partagée » par défaut', async () => {
+    bobBrowser = new Browser(app, uniqueIp());
+    await bobBrowser.login(bob);
+    await stepUp();
+    const created = await browser.post<MailAccount>('/api/mail/accounts', personalInput);
+    expect(created.status).toBe(201);
+    personalId = created.body.data.id;
+    expect(created.body.data).toMatchObject({ visibility: 'personal', ownedByMe: true, address: PERSONAL_ADDRESS });
+    expect(db.prepare('SELECT owner_user_id FROM mail_accounts WHERE id = ?').get(personalId)).toEqual({ owner_user_id: alice.user.id });
+    // Le compte partagé existant n'a pas de propriétaire.
+    expect(db.prepare('SELECT owner_user_id FROM mail_accounts WHERE id = ?').get(supportId)).toEqual({ owner_user_id: null });
+    expect(JSON.parse(lastAudit('mail.account.create').details!)).toMatchObject({ visibility: 'personal' });
+
+    // Aucun champ ne permet de choisir le propriétaire.
+    for (const patch of [{ ownerUserId: bob.user.id }, { owner_user_id: bob.user.id }, { ownedByMe: false }, { visibility: 'private' }]) {
+      expect((await browser.post('/api/mail/accounts', { ...personalInput, ...patch })).status, JSON.stringify(patch)).toBe(400);
+    }
+  });
+
+  it('les listes ne montrent que les boîtes partagées et les siennes', async () => {
+    const forAlice = await browser.get<MailAccount[]>('/api/mail/accounts');
+    expect(forAlice.body.data.map((a) => [a.id, a.visibility, a.ownedByMe])).toEqual([
+      [supportId, 'shared', false],
+      [personalId, 'personal', true],
+    ]);
+    const forBob = await bobBrowser.get<MailAccount[]>('/api/mail/accounts');
+    expect(forBob.body.data.map((a) => [a.id, a.visibility, a.ownedByMe])).toEqual([[supportId, 'shared', false]]);
+    expect(JSON.stringify(forBob.body)).not.toMatch(/alice\.perso|Perso Alice|imap\.alice/);
+
+    // Résumé des non-lus : Alice d'abord (le cache de sa boîte est rempli), puis Bob ne la voit pas pour autant.
+    const aliceSummary = await browser.get<MailUnreadSummary>('/api/mail/unread-summary');
+    expect(aliceSummary.body.data.accounts.map((a) => a.accountId)).toEqual([supportId, personalId]);
+    expect(aliceSummary.body.data.total).toBe(3);
+    const bobSummary = await bobBrowser.get<MailUnreadSummary>('/api/mail/unread-summary');
+    expect(bobSummary.body.data).toEqual({ total: 2, accounts: [{ accountId: supportId, label: 'Support', address: 'support@exemple.test', unread: 2, error: null }] });
+    expect(JSON.stringify(bobSummary.body)).not.toMatch(/alice\.perso|Perso Alice/);
+  });
+
+  it('pour l’autre administrateur, CHAQUE route répond 404 comme pour un compte inexistant, sans aucune connexion', async () => {
+    await stepUp(bobBrowser, bob);
+    for (const [method, url, body] of everyRoute(personalId)) {
+      const missing = await call(bobBrowser, method, url.replace(`/accounts/${personalId}`, '/accounts/987654'), body);
+      const res = await call(bobBrowser, method, url, body);
+      expect(res.status, `${method} ${url}`).toBe(404);
+      expect(res.body, `${method} ${url}`).toEqual(missing.body);
+      expect(missing.status).toBe(404);
+      expect(JSON.stringify(res.raw.headers)).not.toMatch(/alice/i);
+    }
+    // Rien n'a touché la boîte : ni connexion IMAP/SMTP, ni modification en base.
+    expect(mock.instances).toHaveLength(0);
+    expect(mock.smtp.transports).toHaveLength(0);
+    expect(db.prepare('SELECT label, owner_user_id FROM mail_accounts WHERE id = ?').get(personalId)).toEqual({ label: 'Perso Alice', owner_user_id: alice.user.id });
+    expect(mock.servers.get('imap.alice.test')!.boxes.get('INBOX')!.map((m) => [m.uid, [...m.flags]])).toEqual([[77, []]]);
+    // Le journal de Bob ne contient rien qui révèle la boîte.
+    const journal = await bobBrowser.get('/api/security/audit?pageSize=100');
+    expect(JSON.stringify(journal.body)).not.toMatch(/alice\.perso|Perso Alice|imap\.alice/);
+  });
+
+  it('le propriétaire accède à chaque route de sa boîte personnelle', async () => {
+    await stepUp();
+    const results: [string, number][] = [];
+    for (const [method, url, body] of everyRoute(personalId)) {
+      if (method === 'DELETE' && url.endsWith(`/accounts/${personalId}`)) continue; // supprimée plus loin
+      if (url.includes('/move') || (method === 'DELETE' && url.includes('/messages/'))) continue; // testés à part
+      const effective = method === 'PUT' ? { ...personalInput, visibility: 'personal' } : body;
+      const res = await call(browser, method, url, effective);
+      results.push([`${method} ${url}`, res.status]);
+    }
+    expect(results.filter(([, status]) => status !== 200)).toEqual([]);
+    expect(new Set(mock.calls.map((c) => c.host))).toEqual(new Set(['imap.alice.test']));
+    expect(mock.smtp.sent).toHaveLength(2);
+    expect(mock.smtp.sent.every((s) => s.message.envelope.from === PERSONAL_ADDRESS)).toBe(true);
+    const moved = await browser.post(`/api/mail/accounts/${personalId}/messages/77/move`, { destination: 'Corbeille' });
+    expect(moved.status).toBe(200);
+    const removed = await browser.delete(`/api/mail/accounts/${personalId}/messages/77?folder=Corbeille`);
+    expect(removed.status).toBe(200);
+  });
+
+  it('une opération sur une boîte personnelle n’alerte que son propriétaire : l’autre administrateur n’en apprend rien', async () => {
+    await stepUp();
+    outbox.length = 0;
+    const created = await browser.post<MailAccount>('/api/mail/accounts', { ...personalInput, label: 'Perso Alice 2', address: 'alice.secret@exemple.test' });
+    expect(created.status).toBe(201);
+    const { password: _password, ...withoutPassword } = personalInput;
+    expect((await browser.put(`/api/mail/accounts/${created.body.data.id}`, { ...withoutPassword, label: 'Perso Alice 2b', address: 'alice.secret@exemple.test' })).status).toBe(200);
+    expect((await browser.delete(`/api/mail/accounts/${created.body.data.id}`)).status).toBe(200);
+
+    const mails = await alertMails('Compte mail personnel');
+    expect(mails.map((m) => m.subject)).toEqual([
+      '[TalCloud Panel] Compte mail personnel ajouté',
+      '[TalCloud Panel] Compte mail personnel modifié',
+      '[TalCloud Panel] Compte mail personnel supprimé',
+    ]);
+    for (const mail of mails) {
+      // Destinataire unique : le propriétaire. Ni Bob, ni Discord commun, ni notification commune.
+      expect(mail.to).toEqual([alice.email]);
+      expect(`${mail.subject}${mail.text}${mail.html}`).not.toMatch(/alice\.secret|Perso Alice|imap\.alice|smtp\.alice/);
+      expect(mail.text).toContain('Un compte de messagerie personnel a été');
+      expect(mail.text).toContain('par alice');
+    }
+    expect(outbox.some((m) => (Array.isArray(m.to) ? m.to : [m.to]).includes(bob.email))).toBe(false);
+    const notifications = JSON.stringify(db.prepare('SELECT title, body, data FROM notifications').all());
+    expect(notifications).not.toMatch(/alice\.secret|alice\.perso|Perso Alice/);
+    const personalNotifications = db.prepare("SELECT user_id FROM notifications WHERE title LIKE 'Compte mail personnel %'").all() as { user_id: number | null }[];
+    expect(personalNotifications.length).toBeGreaterThanOrEqual(3);
+    expect(personalNotifications.every((n) => n.user_id === alice.user.id)).toBe(true);
+    const bobCenter = await bobBrowser.get<{ title: string }[]>('/api/notifications?pageSize=100');
+    expect(bobCenter.body.data.map((n) => n.title).filter((t) => /personnel/.test(t))).toEqual([]);
+  });
+
+  it('textes d’alerte : adresse uniquement pour une boîte partagée (ou qui l’était)', () => {
+    const shared = { address: 'support@exemple.test', owner_user_id: null };
+    const personal = { address: 'secret@exemple.test', owner_user_id: 1 };
+    expect(accountAlertText('ajouté', 'alice', null, shared).summary).toContain('support@exemple.test');
+    expect(accountAlertText('ajouté', 'alice', null, personal).summary).not.toContain('secret@');
+    expect(accountAlertText('modifié', 'alice', personal, personal).summary).not.toContain('secret@');
+    expect(accountAlertText('supprimé', 'alice', personal, null).summary).not.toContain('secret@');
+    expect(accountAlertText('modifié', 'alice', shared, { ...personal, address: 'nouvelle@exemple.test' })).toEqual({
+      title: 'Compte mail partagé rendu personnel',
+      summary: "Le compte de messagerie partagé support@exemple.test a été rendu personnel par alice : il lui est désormais réservé et n'est plus accessible à l'autre administrateur.",
+    });
+    expect(accountAlertText('modifié', 'alice', personal, { ...shared, address: 'secret@exemple.test' }).title).toBe('Compte mail personnel rendu partagé');
+  });
+
+  it('seul le propriétaire peut rendre partagée sa boîte ; elle devient alors visible des deux', async () => {
+    const { password: _password, ...withoutPassword } = personalInput;
+    await stepUp(bobBrowser, bob);
+    expect((await bobBrowser.put(`/api/mail/accounts/${personalId}`, { ...withoutPassword, visibility: 'shared' })).status).toBe(404);
+    expect(db.prepare('SELECT owner_user_id FROM mail_accounts WHERE id = ?').get(personalId)).toEqual({ owner_user_id: alice.user.id });
+
+    // Sans « visibility », la visibilité est inchangée.
+    await stepUp();
+    const unchanged = await browser.put<MailAccount>(`/api/mail/accounts/${personalId}`, { ...withoutPassword, visibility: undefined, label: 'Perso Alice' });
+    expect(unchanged.body.data).toMatchObject({ visibility: 'personal', ownedByMe: true });
+
+    outbox.length = 0;
+    const shared = await browser.put<MailAccount>(`/api/mail/accounts/${personalId}`, { ...withoutPassword, visibility: 'shared' });
+    expect(shared.status).toBe(200);
+    expect(shared.body.data).toMatchObject({ visibility: 'shared', ownedByMe: false });
+    expect(JSON.parse(lastAudit('mail.account.update').details!)).toMatchObject({ visibility: 'shared', visibilityChanged: true });
+    expect((await alertMails('Compte mail personnel rendu partagé')).length).toBe(1);
+
+    const forBob = await bobBrowser.get<MailAccount[]>('/api/mail/accounts');
+    expect(forBob.body.data.map((a) => a.id)).toContain(personalId);
+    expect((await bobBrowser.get(`/api/mail/accounts/${personalId}/folders`)).status).toBe(200);
+  });
+
+  it('rendre personnelle une boîte partagée la donne à l’auteur, retire l’accès à l’autre et l’avertit', async () => {
+    // Bob s'approprie la boîte (désormais partagée) : elle devient la sienne, jamais celle d'Alice.
+    await stepUp(bobBrowser, bob);
+    outbox.length = 0;
+    const { password: _password, ...withoutPassword } = personalInput;
+    const taken = await bobBrowser.put<MailAccount>(`/api/mail/accounts/${personalId}`, { ...withoutPassword, visibility: 'personal' });
+    expect(taken.status).toBe(200);
+    expect(taken.body.data).toMatchObject({ visibility: 'personal', ownedByMe: true });
+    expect(db.prepare('SELECT owner_user_id FROM mail_accounts WHERE id = ?').get(personalId)).toEqual({ owner_user_id: bob.user.id });
+
+    const alert = await alertMails('Compte mail partagé rendu personnel');
+    expect(alert).toHaveLength(1);
+    expect(alert[0]!.to).toEqual([alice.email, bob.email]);
+    expect(alert[0]!.text).toContain(`partagé ${PERSONAL_ADDRESS} a été rendu personnel par bob`);
+    expect(alert[0]!.text).toContain("n'est plus accessible à l'autre administrateur");
+
+    // Alice n'y a plus accès, sur aucune route, et ne la voit plus dans ses listes.
+    await stepUp();
+    for (const [method, url, body] of everyRoute(personalId)) {
+      expect((await call(browser, method, url, body)).status, `${method} ${url}`).toBe(404);
+    }
+    expect((await browser.get<MailAccount[]>('/api/mail/accounts')).body.data.map((a) => a.id)).toEqual([supportId]);
+    expect((await browser.get<MailUnreadSummary>('/api/mail/unread-summary')).body.data.accounts.map((a) => a.accountId)).toEqual([supportId]);
+
+    // Le propriétaire (Bob) y accède, et lui seul peut la supprimer.
+    expect((await bobBrowser.get(`/api/mail/accounts/${personalId}/messages`)).status).toBe(200);
+    expect((await bobBrowser.get<MailUnreadSummary>('/api/mail/unread-summary')).body.data.accounts.map((a) => a.accountId)).toEqual([supportId, personalId]);
+    await stepUp(bobBrowser, bob);
+    outbox.length = 0;
+    expect((await bobBrowser.delete(`/api/mail/accounts/${personalId}`)).status).toBe(200);
+    const deletion = await alertMails('Compte mail personnel supprimé');
+    expect(deletion).toHaveLength(1);
+    expect(`${deletion[0]!.text}${deletion[0]!.html}`).not.toContain(PERSONAL_ADDRESS);
+  });
+
+  it('une boîte partagée reste utilisable par les deux administrateurs', async () => {
+    expect((await browser.get(`/api/mail/accounts/${supportId}/messages`)).status).toBe(200);
+    expect((await bobBrowser.get(`/api/mail/accounts/${supportId}/messages`)).status).toBe(200);
+    expect((await bobBrowser.post(`/api/mail/accounts/${supportId}/messages/12/flags`, { flagged: true })).status).toBe(200);
   });
 });

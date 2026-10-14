@@ -198,8 +198,9 @@ function ServerCard({ server, busy, onAction }: { server: GameServer; busy: bool
           <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
             <span className="font-mono">{server.identifier}</span>
             {server.node ? <span>· {server.node}</span> : null}
-            {server.resources && server.resources.uptimeMs > 0 ? <span className="tabular">· en ligne depuis {formatDuration(server.resources.uptimeMs / 1000)}</span> : null}
           </p>
+          {/* Sur sa propre ligne : pas de séparateur « · » orphelin en début de ligne quand le texte passe à la ligne. */}
+          {server.resources && server.resources.uptimeMs > 0 ? <p className="tabular text-xs text-muted-foreground">En ligne depuis {formatDuration(server.resources.uptimeMs / 1000)}</p> : null}
         </div>
         <StatusBadge status={status} />
       </div>

@@ -13,6 +13,7 @@ import { Hint } from '@/components/ui/tooltip';
 import { useAuth } from '@/features/auth/auth-context';
 import { useMarkAllRead, useMarkRead, useNotifications, useUnreadCount } from '@/features/notifications/api';
 import { NotificationRow } from '@/features/notifications/notification-item';
+import { useThemeSetter } from '@/features/preferences/api';
 import { useTheme } from '@/hooks/use-theme';
 import { initials } from '@/lib/utils';
 
@@ -103,7 +104,8 @@ function NotificationBell() {
 }
 
 function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
+  const { theme } = useTheme();
+  const { toggleTheme } = useThemeSetter();
   const label = theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre';
   return (
     <Hint label={label}>

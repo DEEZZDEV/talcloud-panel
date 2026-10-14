@@ -2,7 +2,7 @@ import type { MailAttachment, MailFolder, MailMessageDetail, MailMessageSummary 
 import { ImapFlow, type FetchMessageObject, type ImapFlowOptions, type ListResponse } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { AppError, badRequest, notFound, rateLimited, upstream } from '../../core/errors.js';
-import { accountPassword, type MailAccountRow } from './accounts.js';
+import { accountPassword, recheckAccess, type BoundAccount, type MailAccountRow } from './accounts.js';
 import { buildPreview, collectAttachments, findTextPart, leafFilename, leafParts, leafSize, toMailAddress, toMailAddresses, type TextPartRef } from './mime.js';
 import { cleanLine, cleanMessageId, cleanText, parseReferences, sanitizeMailHtml } from './sanitize.js';
 import { LIMITS, tlsPolicy } from './validation.js';
@@ -159,13 +159,16 @@ async function closeQuietly(client: ImapFlow): Promise<void> {
  * Ouvre une connexion IMAP pour CE compte, exécute `fn`, puis ferme la connexion quoi qu'il arrive.
  * Toute erreur est convertie en `AppError` sobre.
  */
-export async function withImap<T>(account: MailAccountRow, fn: (client: ImapFlow) => Promise<T>, timeoutMs = OPERATION_TIMEOUT_MS): Promise<T> {
+export async function withImap<T>(account: BoundAccount, fn: (client: ImapFlow) => Promise<T>, timeoutMs = OPERATION_TIMEOUT_MS): Promise<T> {
   const release = await acquire(account.id);
   let client: ImapFlow | null = null;
   let timer: NodeJS.Timeout | undefined;
   try {
-    const policy = tlsPolicy(account.imap_host, account.imap_secure === 1);
-    client = new ImapFlow(imapOptions(account, accountPassword(account)));
+    // Droit revérifié APRÈS l'attente dans la file : une boîte devenue personnelle à l'autre administrateur (ou
+    // supprimée) fait échouer l'opération en 404 ; la ligne RELUE sert à la connexion.
+    const current = recheckAccess(account);
+    const policy = tlsPolicy(current.imap_host, current.imap_secure === 1);
+    client = new ImapFlow(imapOptions(current, accountPassword(current)));
     const c = client;
     // Sans écouteur, un évènement « error » tardif ferait tomber le processus.
     c.on('error', () => undefined);
@@ -173,6 +176,8 @@ export async function withImap<T>(account: MailAccountRow, fn: (client: ImapFlow
       await c.connect();
       // Défense en profondeur : aucune commande n'est envoyée sur une connexion restée en clair.
       if (!policy.cleartextAllowed && c.secureConnection !== true) throw new InternalMailError('TC_TLS_REQUIRED');
+      // Et de nouveau après la connexion (qui peut être longue), avant toute lecture ou écriture.
+      recheckAccess(account);
       return fn(c);
     })();
     // Si le délai gagne la course, la connexion est fermée dans `finally` et `work` échoue : rejet déjà traité.
@@ -221,7 +226,7 @@ const selectable = (folder: ListResponse): boolean => !folder.flags?.has('\\Nose
 
 const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0);
 
-export async function listFolders(account: MailAccountRow): Promise<MailFolder[]> {
+export async function listFolders(account: BoundAccount): Promise<MailFolder[]> {
   const folders = await withImap(account, (client) => client.list({ statusQuery: { messages: true, unseen: true } }));
   const rank = (f: MailFolder): number => (f.specialUse ? SPECIAL_ORDER.indexOf(f.specialUse) : SPECIAL_ORDER.length);
   return folders
@@ -242,7 +247,7 @@ async function findSpecialFolder(client: ImapFlow, use: NonNullable<MailFolder['
   return folders.filter(selectable).find((folder) => normalizeSpecialUse(folder) === use)?.path ?? null;
 }
 
-export async function unreadCount(account: MailAccountRow): Promise<number> {
+export async function unreadCount(account: BoundAccount): Promise<number> {
   return withImap(
     account,
     async (client) => {
@@ -255,7 +260,7 @@ export async function unreadCount(account: MailAccountRow): Promise<number> {
 }
 
 /** Test de connexion : authentification IMAP réussie sur une connexion chiffrée. */
-export async function testImap(account: MailAccountRow): Promise<void> {
+export async function testImap(account: BoundAccount): Promise<void> {
   await withImap(account, (client) => client.noop(), 20_000);
 }
 
@@ -322,7 +327,7 @@ export interface ListParams {
   search?: string | undefined;
 }
 
-export async function listMessages(account: MailAccountRow, params: ListParams): Promise<{ messages: MailMessageSummary[]; total: number }> {
+export async function listMessages(account: BoundAccount, params: ListParams): Promise<{ messages: MailMessageSummary[]; total: number }> {
   return withImap(account, (client) =>
     withMailbox(client, params.folder, true, async () => {
       const offset = (params.page - 1) * params.pageSize;
@@ -359,7 +364,7 @@ export async function listMessages(account: MailAccountRow, params: ListParams):
 }
 
 /** Détail d'un message, sans la fiche WHMCS (ajoutée par la route). */
-export async function readMessage(account: MailAccountRow, folder: string, uid: number): Promise<Omit<MailMessageDetail, 'whmcsClient'>> {
+export async function readMessage(account: BoundAccount, folder: string, uid: number): Promise<Omit<MailMessageDetail, 'whmcsClient'>> {
   const message = await withImap(account, (client) =>
     withMailbox(client, folder, true, async () => {
       // BODY.PEEK en lecture seule : lire un message ne le marque jamais « lu ».
@@ -416,7 +421,7 @@ export interface DownloadedAttachment {
   content: Buffer;
 }
 
-export async function downloadAttachment(account: MailAccountRow, folder: string, uid: number, partId: string): Promise<DownloadedAttachment> {
+export async function downloadAttachment(account: BoundAccount, folder: string, uid: number, partId: string): Promise<DownloadedAttachment> {
   return withImap(
     account,
     (client) =>
@@ -457,7 +462,7 @@ export interface FlagChange {
   flagged?: boolean | undefined;
 }
 
-export async function setFlags(account: MailAccountRow, folder: string, uid: number, change: FlagChange): Promise<{ seen: boolean; flagged: boolean; answered: boolean }> {
+export async function setFlags(account: BoundAccount, folder: string, uid: number, change: FlagChange): Promise<{ seen: boolean; flagged: boolean; answered: boolean }> {
   return withImap(account, (client) =>
     withMailbox(client, folder, false, async () => {
       await assertMessageExists(client, uid);
@@ -474,7 +479,7 @@ export async function setFlags(account: MailAccountRow, folder: string, uid: num
   );
 }
 
-export async function moveMessage(account: MailAccountRow, folder: string, uid: number, destination: string): Promise<void> {
+export async function moveMessage(account: BoundAccount, folder: string, uid: number, destination: string): Promise<void> {
   if (destination === folder) throw badRequest('Le message est déjà dans ce dossier');
   await withImap(account, (client) =>
     withMailbox(client, folder, false, async () => {
@@ -492,7 +497,7 @@ export async function moveMessage(account: MailAccountRow, folder: string, uid: 
 }
 
 /** Supprime un message : vers la corbeille si elle existe (et qu'il n'y est pas déjà), sinon suppression définitive. */
-export async function deleteMessage(account: MailAccountRow, folder: string, uid: number): Promise<{ movedToTrash: boolean }> {
+export async function deleteMessage(account: BoundAccount, folder: string, uid: number): Promise<{ movedToTrash: boolean }> {
   return withImap(account, async (client) => {
     const trash = await findSpecialFolder(client, 'trash');
     return withMailbox(client, folder, false, async () => {
@@ -516,7 +521,7 @@ export interface ReplyContext {
 }
 
 /** En-têtes de fil du message auquel on répond. Les valeurs viennent d'un mail hostile : elles sont filtrées. */
-export async function replyContext(account: MailAccountRow, folder: string, uid: number): Promise<ReplyContext> {
+export async function replyContext(account: BoundAccount, folder: string, uid: number): Promise<ReplyContext> {
   return withImap(account, (client) =>
     withMailbox(client, folder, true, async () => {
       const row = await client.fetchOne(uid, { uid: true, envelope: true, headers: ['references'] }, { uid: true });
@@ -537,7 +542,7 @@ export interface AfterSendResult {
  * Après un envoi réussi : copie dans « Envoyés » (APPEND) et marquage \Answered de l'original.
  * Au mieux : le mail est déjà parti, un échec ici ne doit pas faire croire à un échec d'envoi.
  */
-export async function afterSend(account: MailAccountRow, raw: Buffer | null, reply: { folder: string; uid: number } | null): Promise<AfterSendResult> {
+export async function afterSend(account: BoundAccount, raw: Buffer | null, reply: { folder: string; uid: number } | null): Promise<AfterSendResult> {
   const result: AfterSendResult = { savedToSent: false, markedAnswered: false };
   try {
     await withImap(account, async (client) => {

@@ -1,5 +1,5 @@
-import type { MailAccount, MailAccountInput, SettingsTestResult } from '@shared/api-types';
-import { FlaskConical, Inbox, Mail, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import type { MailAccount, MailAccountInput, MailAccountVisibility, SettingsTestResult } from '@shared/api-types';
+import { FlaskConical, Inbox, Lock, Mail, MoreHorizontal, Pencil, Plus, Trash2, TriangleAlert, Users } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
@@ -13,10 +13,11 @@ import { Label } from '@/components/ui/label';
 import { Sheet, SheetBody, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { VisibilityBadge } from '@/features/mail/visibility-badge';
 import { useDeleteMailAccount, useMailAccounts, useSaveMailAccount, useTestMailAccount } from '@/features/mail/api';
 import { HelpDisclosure, SectionShell, TestResult } from '@/features/settings/integration-section';
 import { errorMessage, isApiError, isStepUpCancelled } from '@/lib/api';
-import { isRecord } from '@/lib/utils';
+import { cn, isRecord } from '@/lib/utils';
 
 interface FormState {
   label: string;
@@ -29,9 +30,10 @@ interface FormState {
   smtpHost: string;
   smtpPort: string;
   smtpSecure: boolean;
+  visibility: MailAccountVisibility;
 }
 
-const emptyForm = (): FormState => ({ label: '', address: '', username: '', password: '', imapHost: '', imapPort: '993', imapSecure: true, smtpHost: '', smtpPort: '465', smtpSecure: true });
+const emptyForm = (): FormState => ({ label: '', address: '', username: '', password: '', imapHost: '', imapPort: '993', imapSecure: true, smtpHost: '', smtpPort: '465', smtpSecure: true, visibility: 'shared' });
 const toForm = (account: MailAccount): FormState => ({
   label: account.label,
   address: account.address,
@@ -43,9 +45,66 @@ const toForm = (account: MailAccount): FormState => ({
   smtpHost: account.smtpHost,
   smtpPort: String(account.smtpPort),
   smtpSecure: account.smtpSecure,
+  visibility: account.visibility,
 });
 
 const validPort = (value: string): boolean => /^\d{1,5}$/.test(value) && Number(value) >= 1 && Number(value) <= 65_535;
+
+const VISIBILITY_OPTIONS: { value: MailAccountVisibility; title: string; text: string; icon: typeof Users }[] = [
+  { value: 'shared', title: 'Partagée', text: 'Visible par les deux administrateurs.', icon: Users },
+  { value: 'personal', title: 'Personnelle', text: 'Visible uniquement par moi.', icon: Lock },
+];
+
+/** Choix de la visibilité d'une boîte (boutons radio natifs, accessibles au clavier) avec les conséquences d'un changement. */
+function VisibilityChoice({ value, onChange, account }: { value: MailAccountVisibility; onChange: (value: MailAccountVisibility) => void; account: MailAccount | null }) {
+  const losingShared = account !== null && account.visibility === 'shared' && value === 'personal';
+  const becomingShared = account !== null && account.visibility === 'personal' && value === 'shared';
+  return (
+    <fieldset className="flex flex-col gap-2">
+      <legend className="mb-1.5 text-[13px] font-medium">Visibilité</legend>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {VISIBILITY_OPTIONS.map((option) => {
+          const checked = value === option.value;
+          return (
+            <label
+              key={option.value}
+              className={cn(
+                'flex min-h-14 cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/40',
+                checked ? 'border-primary/60 bg-primary/[0.06]' : 'hover:bg-accent/50',
+              )}
+            >
+              <input type="radio" name="mail-visibility" value={option.value} checked={checked} onChange={() => onChange(option.value)} className="sr-only" />
+              <span className={cn('mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border', checked ? 'border-primary' : 'border-input')} aria-hidden>
+                {checked ? <span className="size-2 rounded-full bg-primary" /> : null}
+              </span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex items-center gap-1.5 text-[13px] font-medium">
+                  <option.icon className="size-3.5 text-muted-foreground" aria-hidden />
+                  {option.title}
+                </span>
+                <span className="text-xs leading-snug text-muted-foreground">{option.text}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      {losingShared ? (
+        <p role="alert" className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs leading-relaxed">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+          <span>
+            <span className="font-medium">L'autre administrateur perdra l'accès à cette boîte</span>{' '}
+            <span className="text-muted-foreground">(elle disparaîtra de ses mails et de ses réglages). Il en sera prévenu par une alerte de sécurité.</span>
+          </span>
+        </p>
+      ) : null}
+      {becomingShared ? (
+        <p className="rounded-lg border bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          Cette boîte et tous ses messages deviendront visibles par l'autre administrateur.
+        </p>
+      ) : null}
+    </fieldset>
+  );
+}
 
 function AccountForm({ open, account, onClose }: { open: boolean; account: MailAccount | null; onClose: () => void }) {
   const save = useSaveMailAccount();
@@ -97,6 +156,8 @@ function AccountForm({ open, account, onClose }: { open: boolean; account: MailA
       username: form.username.trim(),
     };
     if (form.password) input.password = form.password;
+    // Création : visibilité toujours précisée. Modification : envoyée seulement si elle change (absente = inchangée).
+    if (account === null || form.visibility !== account.visibility) input.visibility = form.visibility;
 
     setFormError(null);
     save.mutate(
@@ -130,6 +191,7 @@ function AccountForm({ open, account, onClose }: { open: boolean; account: MailA
         </SheetHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col" noValidate>
           <SheetBody className="flex flex-col gap-4">
+            <VisibilityChoice value={form.visibility} onChange={(value) => set('visibility', value)} account={account} />
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field id="mail-label" label="Nom du compte" error={errors.label} hint="Ex. Support, Contact, Facturation.">
                 <Input id="mail-label" value={form.label} onChange={(event) => set('label', event.target.value)} maxLength={60} placeholder="Support" aria-invalid={Boolean(errors.label)} autoComplete="off" />
@@ -268,7 +330,7 @@ export function MailAccountsSection() {
       id="mail"
       icon={Mail}
       title="Comptes mail"
-      description="Boîtes IMAP/SMTP consultées depuis la page Mails (support, contact, facturation…)."
+      description="Boîtes IMAP/SMTP consultées depuis la page Mails. Une boîte partagée est visible par les deux administrateurs ; une boîte personnelle, uniquement par son propriétaire."
       badge={accounts.data ? accounts.data.length > 0 ? <Badge tone="success">{accounts.data.length} compte{accounts.data.length > 1 ? 's' : ''}</Badge> : <Badge>Aucun compte</Badge> : undefined}
     >
       {accounts.data ? (
@@ -294,6 +356,7 @@ export function MailAccountsSection() {
                     <div className="flex min-w-0 flex-col gap-1">
                       <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
                         <span className="break-words">{account.label}</span>
+                        <VisibilityBadge account={account} />
                         {account.hasPassword ? null : <Badge tone="warning">Mot de passe manquant</Badge>}
                       </p>
                       <p className="break-all text-[13px] text-muted-foreground">{account.address}</p>

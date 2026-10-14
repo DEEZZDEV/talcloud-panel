@@ -480,7 +480,13 @@ export interface WhmcsWebhookPayload {
 
 // ───────────────────────────── Mails ─────────────────────────────
 
-/** GET /api/mail/accounts */
+/**
+ * « shared » : boîte commune, visible et utilisable par les deux administrateurs.
+ * « personal » : boîte réservée à son propriétaire ; pour l'autre administrateur elle n'existe pas (404, absente des listes).
+ */
+export type MailAccountVisibility = 'shared' | 'personal';
+
+/** GET /api/mail/accounts — uniquement les boîtes partagées et les boîtes personnelles de l'utilisateur connecté. */
 export interface MailAccount {
   id: number;
   label: string; // Support, Contact, Facturation…
@@ -495,8 +501,15 @@ export interface MailAccount {
   /** Le mot de passe n'est jamais renvoyé. */
   hasPassword: boolean;
   createdAt: string;
+  visibility: MailAccountVisibility;
+  /** true si la boîte est personnelle ET appartient à l'utilisateur connecté (toujours false pour une boîte partagée). */
+  ownedByMe: boolean;
 }
-/** POST /api/mail/accounts, PUT /api/mail/accounts/:id (step-up). Mot de passe vide en PUT = inchangé. */
+/**
+ * POST /api/mail/accounts, PUT /api/mail/accounts/:id (step-up). Mot de passe vide en PUT = inchangé.
+ * `visibility` : défaut « shared » à la création ; absente en PUT = inchangée. Une boîte rendue personnelle appartient
+ * toujours à l'administrateur qui fait la requête ; seul le propriétaire peut rendre partagée sa boîte personnelle.
+ */
 export interface MailAccountInput {
   label: string;
   address: string;
@@ -508,6 +521,7 @@ export interface MailAccountInput {
   smtpSecure: boolean;
   username: string;
   password?: string;
+  visibility?: MailAccountVisibility;
 }
 
 /** GET /api/mail/accounts/:id/folders */
@@ -703,4 +717,31 @@ export interface ProxmoxSummary {
   nodes: { total: number; online: number };
   guests: { total: number; running: number; stopped: number };
   offlineNodes: string[];
+}
+
+// ───────────────────────────── Préférences ─────────────────────────────
+
+/** Blocs de la page d'accueil. */
+export type HomeBlockId = 'stats' | 'revenueChart' | 'recentOrders' | 'mail' | 'offlineServices' | 'notifications';
+
+/**
+ * GET /api/me/preferences — préférences PROPRES au compte connecté (les données métier restent communes).
+ * Valeurs par défaut (aussi pour toute clé absente) : thème 'dark', tous les push à true, tous les blocs dans l'ordre
+ * de HomeBlockId, aucune boîte mail par défaut.
+ */
+export interface UserPreferences {
+  theme: 'dark' | 'light' | 'system';
+  /** Types de notifications envoyés en push à CE compte (le centre de notifications et le flux temps réel montrent tout). */
+  push: { orders: boolean; payments: boolean; security: boolean; system: boolean };
+  /** Ordre du tableau = ordre d'affichage ; un bloc absent est masqué. Sans doublon. */
+  home: { blocks: HomeBlockId[] };
+  mail: { defaultAccountId: number | null };
+}
+
+/** PUT /api/me/preferences — corps partiel, sans step-up (session + CSRF) → UserPreferences complètes. */
+export interface UserPreferencesUpdate {
+  theme?: UserPreferences['theme'];
+  push?: Partial<UserPreferences['push']>;
+  home?: { blocks: HomeBlockId[] };
+  mail?: { defaultAccountId: number | null };
 }

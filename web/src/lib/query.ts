@@ -104,4 +104,6 @@ export const qk = {
     backupCodes: ['security', 'backup-codes'] as const,
   },
   settings: (namespace: string) => ['settings', namespace] as const,
+  /** Préférences du compte connecté (vidées avec tout le cache à la déconnexion). */
+  preferences: ['me', 'preferences'] as const,
 };

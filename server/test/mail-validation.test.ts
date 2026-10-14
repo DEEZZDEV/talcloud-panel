@@ -37,6 +37,7 @@ const account = (overrides: Partial<MailAccountRow> = {}): MailAccountRow => ({
   username: 'support@exemple.test',
   password_enc: '',
   created_at: 0,
+  owner_user_id: null,
   ...overrides,
 });
 

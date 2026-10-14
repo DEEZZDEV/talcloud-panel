@@ -151,6 +151,7 @@ export function ComposeDialog({ open, onClose, accounts, defaultAccountId, draft
   const ids = { to: useId(), cc: useId(), bcc: useId(), subject: useId(), text: useId(), from: useId() };
   const send = useSendMail();
   const fileInput = useRef<HTMLInputElement>(null);
+  const textArea = useRef<HTMLTextAreaElement>(null);
   const [accountId, setAccountId] = useState<number | null>(defaultAccountId);
   const [to, setTo] = useState<string[]>([]);
   const [cc, setCc] = useState<string[]>([]);
@@ -181,6 +182,16 @@ export function ComposeDialog({ open, onClose, accounts, defaultAccountId, draft
       setTo([]);
       setSubject('');
       setText('');
+    }
+    // Réponse : le curseur se place AVANT la citation, pour écrire directement sa réponse.
+    if (reply) {
+      window.setTimeout(() => {
+        const area = textArea.current;
+        if (!area) return;
+        area.focus();
+        area.setSelectionRange(0, 0);
+        area.scrollTop = 0;
+      }, 60);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -293,7 +304,7 @@ export function ComposeDialog({ open, onClose, accounts, defaultAccountId, draft
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={ids.text}>Message</Label>
-              <Textarea id={ids.text} value={text} onChange={(event) => setText(event.target.value)} rows={10} maxLength={200_000} autoFocus={Boolean(reply)} className="min-h-[200px] resize-y" />
+              <Textarea id={ids.text} value={text} onChange={(event) => setText(event.target.value)} rows={10} maxLength={200_000} ref={textArea} className="min-h-[200px] resize-y" />
             </div>
 
             {attachments.length > 0 ? (

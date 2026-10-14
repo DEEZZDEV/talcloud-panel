@@ -1,5 +1,5 @@
-import type { PanelNotification } from '@shared/api-types';
-import { ArrowRight, BellOff, Boxes, CircleCheck, FileWarning, Gamepad2, Inbox, MailWarning, Server, ShoppingCart, TrendingUp, UserPlus, Wallet } from 'lucide-react';
+import type { HomeBlockId, PanelNotification } from '@shared/api-types';
+import { ArrowRight, BellOff, LayoutGrid, Boxes, CircleCheck, FileWarning, Gamepad2, Inbox, MailWarning, Server, ShoppingCart, TrendingUp, UserPlus, Wallet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChartCard, ChartLegend, ChartSkeleton, SERIES_COLORS, TimeSeriesChart, type ChartSeries } from '@/components/shared/charts';
@@ -12,6 +12,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/ca
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/features/auth/auth-context';
 import { useMailUnreadSummary } from '@/features/mail/api';
+import { DEFAULT_PREFERENCES, HOME_BLOCKS, layoutRows, usePreferences, type BlockRow } from '@/features/preferences/api';
 import { useMarkRead, useNotifications } from '@/features/notifications/api';
 import { NotificationRow } from '@/features/notifications/notification-item';
 import { useProxmoxSummary } from '@/features/proxmox/api';
@@ -21,6 +22,7 @@ import { ClientLink, TruncatedNotice } from '@/features/whmcs/components';
 import { isNotConfigured } from '@/lib/api';
 import { formatMoney, formatMoneyCompact, formatMonth, formatNumber, formatSmartDate, plural } from '@/lib/format';
 import { orderStatus, paymentStatus } from '@/lib/status';
+import { cn } from '@/lib/utils';
 import type { WhmcsMonthlyPoint } from '@shared/api-types';
 
 function BlockHeader({ title, description, to, linkLabel }: { title: string; description?: ReactNode; to?: string; linkLabel?: string }) {
@@ -467,9 +469,56 @@ function greeting(): string {
 }
 
 /** Accueil : chaque bloc charge, échoue ou signale une intégration manquante indépendamment des autres. */
+const BLOCK_COMPONENTS: Record<HomeBlockId, () => ReactNode> = {
+  stats: () => <MonthStats />,
+  revenueChart: () => <RevenueChart />,
+  recentOrders: () => <RecentOrders />,
+  mail: () => <UnreadMail />,
+  offlineServices: () => <OfflineServices />,
+  notifications: () => <RecentNotifications />,
+};
+
+/** Rangée de blocs : pleine largeur, ou deux blocs côte à côte (2/3 – 1/3 ou moitié – moitié) sur grand écran. */
+function Row({ row }: { row: BlockRow }) {
+  if (row.kind === 'single') return <section aria-label={HOME_BLOCKS[row.block].label}>{BLOCK_COMPONENTS[row.block]()}</section>;
+  const [first, second] = row.blocks;
+  const span = (block: HomeBlockId) => (HOME_BLOCKS[block].width === 'wide' ? 'xl:col-span-2' : 'xl:col-span-1');
+  const equal = HOME_BLOCKS[first].width === HOME_BLOCKS[second].width;
+  return (
+    <div className={cn('grid grid-cols-1 gap-4', equal ? 'xl:grid-cols-2' : 'xl:grid-cols-3')}>
+      <section aria-label={HOME_BLOCKS[first].label} className={equal ? undefined : span(first)}>
+        {BLOCK_COMPONENTS[first]()}
+      </section>
+      <section aria-label={HOME_BLOCKS[second].label} className={equal ? undefined : span(second)}>
+        {BLOCK_COMPONENTS[second]()}
+      </section>
+    </div>
+  );
+}
+
+function BlocksSkeleton() {
+  return (
+    <div className="flex flex-col gap-4" aria-busy aria-label="Chargement de l'accueil">
+      <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 xl:grid-cols-5">
+        {Array.from({ length: 5 }, (_, index) => (
+          <StatCardSkeleton key={index} />
+        ))}
+      </div>
+      <Skeleton className="h-80 rounded-xl" />
+    </div>
+  );
+}
+
+/**
+ * Accueil : les blocs affichés et leur ordre suivent les préférences du compte connecté. Chaque bloc charge, échoue ou
+ * signale une intégration manquante indépendamment des autres.
+ */
 export default function HomePage() {
   const { user } = useAuth();
-  const overview = useWhmcsOverview();
+  const preferences = usePreferences();
+  // Préférences illisibles (erreur réseau) : l'accueil par défaut plutôt qu'une page vide.
+  const blocks = preferences.data?.home.blocks ?? (preferences.isError ? DEFAULT_PREFERENCES.home.blocks : null);
+  const overview = useWhmcsOverview(blocks?.includes('stats') ?? false);
   const formatted = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
   const today = formatted.charAt(0).toUpperCase() + formatted.slice(1);
   return (
@@ -482,21 +531,33 @@ export default function HomePage() {
             {overview.data ? ` · activité de ${formatMonth(overview.data.month)}` : null}
           </>
         }
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link to="/settings#mon-espace">
+              <LayoutGrid aria-hidden />
+              Personnaliser
+            </Link>
+          </Button>
+        }
       />
-      <MonthStats />
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2">
-          <RevenueChart />
-        </div>
-        <OfflineServices />
-      </div>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2">
-          <RecentOrders />
-        </div>
-        <UnreadMail />
-      </div>
-      <RecentNotifications />
+      {blocks === null ? (
+        <BlocksSkeleton />
+      ) : blocks.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={LayoutGrid}
+            title="Votre accueil est vide"
+            description="Tous les blocs sont masqués. Choisissez ceux à afficher, et leur ordre, dans Réglages › Mon espace."
+            action={
+              <Button asChild size="sm">
+                <Link to="/settings#mon-espace">Choisir les blocs</Link>
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        layoutRows(blocks).map((row) => <Row key={row.kind === 'single' ? row.block : row.blocks.join('+')} row={row} />)
+      )}
     </Page>
   );
 }

@@ -1,7 +1,8 @@
-import { Bell, Boxes, Gamepad2, Mail, Receipt, type LucideIcon } from 'lucide-react';
+import { Bell, Boxes, Building2, Gamepad2, Mail, Receipt, UserRound, type LucideIcon } from 'lucide-react';
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Page, PageHeader } from '@/components/shared/page';
+import { MySpaceSection } from '@/features/preferences/my-space';
 import { IntegrationSection, type SettingsField } from '@/features/settings/integration-section';
 import { MailAccountsSection } from '@/features/settings/mail-accounts';
 import { GatewayAccountsEditor, PushSettings } from '@/features/settings/notification-extras';
@@ -40,12 +41,18 @@ const NOTIFICATION_FIELDS: SettingsField[] = [
 const URL_ONLY = ['url'] as const;
 const PROXMOX_REKEY = ['url', 'verifyTls', 'caCert'] as const;
 
-const SECTIONS: { id: string; label: string; icon: LucideIcon }[] = [
-  { id: 'whmcs', label: 'WHMCS', icon: Receipt },
-  { id: 'pterodactyl', label: 'Pterodactyl', icon: Gamepad2 },
-  { id: 'proxmox', label: 'Proxmox', icon: Boxes },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'mail', label: 'Comptes mail', icon: Mail },
+const NAV_GROUPS: { label: string; sections: { id: string; label: string; icon: LucideIcon }[] }[] = [
+  { label: 'Mon compte', sections: [{ id: 'mon-espace', label: 'Mon espace', icon: UserRound }] },
+  {
+    label: 'Intégrations communes',
+    sections: [
+      { id: 'whmcs', label: 'WHMCS', icon: Receipt },
+      { id: 'pterodactyl', label: 'Pterodactyl', icon: Gamepad2 },
+      { id: 'proxmox', label: 'Proxmox', icon: Boxes },
+      { id: 'notifications', label: 'Notifications', icon: Bell },
+      { id: 'mail', label: 'Comptes mail', icon: Mail },
+    ],
+  },
 ];
 
 export default function SettingsPage() {
@@ -61,12 +68,16 @@ export default function SettingsPage() {
 
   return (
     <Page>
-      <PageHeader title="Réglages" description="Connexions aux services de l'hébergeur. Toute modification demande votre code 2FA ; les secrets sont chiffrés et ne quittent jamais le serveur." />
+      <PageHeader title="Réglages" description="Vos préférences personnelles, puis les connexions communes aux services de l'hébergeur (secrets chiffrés, jamais renvoyés au navigateur)." />
 
       <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[200px_minmax(0,1fr)]">
         <nav aria-label="Sections des réglages" className="-mx-4 overflow-x-auto px-4 xl:sticky xl:top-20 xl:mx-0 xl:px-0">
           <ul className="flex gap-1 xl:flex-col">
-            {SECTIONS.map((section) => (
+            {NAV_GROUPS.map((group, groupIndex) => [
+              <li key={group.label} className={cn('hidden px-3 pb-1 text-2xs font-medium uppercase tracking-[0.1em] text-subtle xl:block', groupIndex > 0 && 'pt-4')} aria-hidden>
+                {group.label}
+              </li>,
+              ...group.sections.map((section) => (
               <li key={section.id}>
                 <a
                   href={`#${section.id}`}
@@ -79,11 +90,24 @@ export default function SettingsPage() {
                   {section.label}
                 </a>
               </li>
-            ))}
+              )),
+            ])}
           </ul>
         </nav>
 
         <div className="flex min-w-0 flex-col gap-5">
+          <MySpaceSection />
+
+          <div className="flex flex-col gap-1 border-t pt-6">
+            <h2 className="flex items-center gap-2 text-[15px] font-semibold">
+              <Building2 className="size-4 text-subtle" aria-hidden />
+              Intégrations communes
+            </h2>
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
+              Partagées par les deux administrateurs : toute modification s'applique aux deux comptes, demande votre code 2FA et déclenche une alerte de sécurité.
+            </p>
+          </div>
+
           <IntegrationSection
             namespace="whmcs"
             icon={Receipt}

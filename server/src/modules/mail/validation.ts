@@ -234,9 +234,12 @@ const accountBase = {
   username: singleLine(255).refine((v) => !/\s/.test(v), "Identifiant invalide (pas d'espace)"),
 };
 
-export const accountCreateBody = z.strictObject({ ...accountBase, password: password.min(1, 'Mot de passe requis') });
-/** En modification, un mot de passe absent ou vide laisse le mot de passe inchangé. */
-export const accountUpdateBody = z.strictObject({ ...accountBase, password: password.optional() });
+const visibility = z.enum(['shared', 'personal']);
+
+/** À la création, une boîte est partagée sauf demande explicite. */
+export const accountCreateBody = z.strictObject({ ...accountBase, visibility: visibility.default('shared'), password: password.min(1, 'Mot de passe requis') });
+/** En modification, un mot de passe absent ou vide laisse le mot de passe inchangé ; une visibilité absente aussi. */
+export const accountUpdateBody = z.strictObject({ ...accountBase, visibility: visibility.optional(), password: password.optional() });
 
 export type AccountCreateInput = z.infer<typeof accountCreateBody>;
 export type AccountUpdateInput = z.infer<typeof accountUpdateBody>;

@@ -1,4 +1,4 @@
-import type { PanelNotification, PushPublicKey, PushSubscriptionInfo, SettingsTestResult, UnreadCount } from '@shared/api-types';
+import type { PanelNotification, PushPublicKey, PushSubscriptionInfo, SettingsTestResult, UnreadCount, UserPreferences } from '@shared/api-types';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../../core/audit.js';
@@ -18,6 +18,7 @@ import {
   saveSubscription,
   sendTestPush,
 } from './push.js';
+import { getPreferences, preferencesUpdateSchema, updatePreferences } from './preferences.js';
 import { flushNotifications } from './service.js';
 import { notificationSettingsSchema, SETTINGS_NAMESPACE, type NotificationSettings } from './settings.js';
 import { closeAllStreams, EventStream } from './sse.js';
@@ -91,6 +92,23 @@ export default async function notificationsRoutes(app: FastifyInstance): Promise
     if (changed === null) throw notFound('Notification introuvable');
     if (changed) audit(request, { action: 'notifications.read', target: `notification #${id}` });
     return { data: { id, read: true } };
+  });
+
+  // ── Préférences du compte connecté (aucun identifiant en paramètre : impossible d'atteindre celles de l'autre) ──
+  app.get('/api/me/preferences', async (request): Promise<{ data: UserPreferences }> => ({ data: getPreferences(currentUser(request).id) }));
+
+  // Préférences de confort : session et CSRF comme toute route, sans step-up.
+  app.put('/api/me/preferences', async (request): Promise<{ data: UserPreferences }> => {
+    const user = currentUser(request);
+    const parsed = preferencesUpdateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      audit(request, { action: 'preferences.update', success: false });
+      throw parsed.error;
+    }
+    const data = updatePreferences(user.id, parsed.data);
+    // Seuls les noms des sections modifiées sont journalisés.
+    audit(request, { action: 'preferences.update', details: { fields: Object.keys(parsed.data) } });
+    return { data };
   });
 
   // ── Push navigateur ──

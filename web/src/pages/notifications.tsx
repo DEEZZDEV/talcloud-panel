@@ -173,7 +173,14 @@ export default function NotificationsPage() {
       </Card>
 
       <Sheet open={selected !== null} onOpenChange={(open) => (!open ? close() : undefined)}>
-        <SheetContent className="max-w-md">
+        <SheetContent
+          className="max-w-md focus-visible:outline-none"
+          // Le focus va au panneau lui-même (lecteurs d'écran, Échap) plutôt qu'au bouton de fermeture surligné.
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            (event.currentTarget as HTMLElement).focus();
+          }}
+        >
           <SheetHeader>
             <SheetTitle>Détail de la notification</SheetTitle>
             <SheetDescription className="sr-only">Informations complètes sur la notification sélectionnée</SheetDescription>

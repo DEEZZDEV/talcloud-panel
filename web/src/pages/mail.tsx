@@ -1,6 +1,8 @@
 import type { MailAccount, MailAddress, MailFolder, MailMessageDetail, MailMessageSummary } from '@shared/api-types';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import {
+  Lock,
   Archive,
   ArrowLeft,
   CornerUpLeft,
@@ -34,15 +36,18 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Hint } from '@/components/ui/tooltip';
 import { attachmentUrl, useDeleteMessage, useMailAccounts, useMailFolders, useMailMessage, useMailMessages, useMoveMessage, useSetFlags } from '@/features/mail/api';
 import { ComposeDialog, type ComposeDraft } from '@/features/mail/compose';
 import { MessageFrame } from '@/features/mail/message-frame';
+import { groupAccounts, VisibilityBadge } from '@/features/mail/visibility-badge';
+import { usePreferences } from '@/features/preferences/api';
 import { useDebounce } from '@/hooks/use-debounce';
 import { useIsDesktop } from '@/hooks/use-media-query';
-import { errorMessage, isStepUpCancelled } from '@/lib/api';
+import { errorMessage, isApiError, isStepUpCancelled } from '@/lib/api';
+import { qk } from '@/lib/query';
 import { formatBytes, formatDateTime, formatNumber, formatSmartDate } from '@/lib/format';
 import { clientStatus } from '@/lib/status';
 import { cn, initials } from '@/lib/utils';
@@ -385,11 +390,14 @@ function Reader({ accountId, message, folders, onBack, onReply, onGone }: Reader
 
 // ───────────────────────────── Page ─────────────────────────────
 
-function Workspace({ accounts }: { accounts: MailAccount[] }) {
+function Workspace({ accounts, defaultAccountId }: { accounts: MailAccount[]; defaultAccountId: number | null }) {
   const isDesktop = useIsDesktop();
+  const client = useQueryClient();
   const [params, setParams] = useSearchParams();
   const accountParam = Number.parseInt(params.get('account') ?? '', 10);
-  const account = accounts.find((item) => item.id === accountParam) ?? accounts[0];
+  // Boîte demandée dans l'URL, sinon la boîte par défaut du compte (si elle est toujours accessible), sinon la première.
+  const account = accounts.find((item) => item.id === accountParam) ?? accounts.find((item) => item.id === defaultAccountId) ?? accounts[0];
+  const groups = useMemo(() => groupAccounts(accounts), [accounts]);
   const accountId = account?.id ?? null;
   const folder = params.get('folder') || 'INBOX';
   const uidParam = Number.parseInt(params.get('uid') ?? '', 10);
@@ -452,6 +460,19 @@ function Workspace({ accounts }: { accounts: MailAccount[] }) {
     }
   }, [message.data, accountId, uid, setFlags]);
 
+  const lost = isApiError(folders.error) && folders.error.code === 'NOT_FOUND' ? folders.error : isApiError(messages.error) && messages.error.code === 'NOT_FOUND' ? messages.error : null;
+  const handledLoss = useRef<number | null>(null);
+  useEffect(() => {
+    if (!lost || accountId === null || handledLoss.current === accountId) return;
+    handledLoss.current = accountId;
+    toast.warning("Cette boîte mail n'est plus accessible", { description: "Elle a été supprimée ou rendue personnelle par l'autre administrateur." });
+    client.removeQueries({ queryKey: qk.mail.folders(accountId) });
+    client.removeQueries({ queryKey: qk.mail.messagesRoot(accountId) });
+    void client.invalidateQueries({ queryKey: qk.mail.accounts });
+    void client.invalidateQueries({ queryKey: qk.mail.summary });
+    setParams({}, { replace: true });
+  }, [lost, accountId, client, setParams]);
+
   if (!account || accountId === null) return null;
 
   const selectAccount = (value: string) => {
@@ -474,11 +495,29 @@ function Workspace({ accounts }: { accounts: MailAccount[] }) {
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {accounts.map((item) => (
-          <SelectItem key={item.id} value={String(item.id)}>
-            {item.label}
-          </SelectItem>
-        ))}
+        {groups.mine.length > 0 ? (
+          <SelectGroup>
+            <SelectLabel>Mes boîtes</SelectLabel>
+            {groups.mine.map((item) => (
+              <SelectItem key={item.id} value={String(item.id)}>
+                <span className="flex items-center gap-2">
+                  {item.label}
+                  <Lock className="size-3 text-link" aria-label="personnelle" />
+                </span>
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ) : null}
+        {groups.shared.length > 0 ? (
+          <SelectGroup>
+            {groups.mine.length > 0 ? <SelectLabel>Boîtes partagées</SelectLabel> : null}
+            {groups.shared.map((item) => (
+              <SelectItem key={item.id} value={String(item.id)}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ) : null}
       </SelectContent>
     </Select>
   );
@@ -495,7 +534,7 @@ function Workspace({ accounts }: { accounts: MailAccount[] }) {
       <div className="flex shrink-0 flex-col gap-2 border-b p-3">
         {isDesktop ? (
           <div className="flex items-center justify-between gap-2 px-1">
-            <h2 className="truncate text-sm font-semibold">{currentFolder ? folderLabel(currentFolder) : folder}</h2>
+            <h2 className="truncate text-sm font-semibold">{currentFolder ? folderLabel(currentFolder) : folder === 'INBOX' ? 'Boîte de réception' : folder}</h2>
             <RefreshButton onClick={refresh} loading={messages.isFetching} />
           </div>
         ) : (
@@ -578,9 +617,12 @@ function Workspace({ accounts }: { accounts: MailAccount[] }) {
           <aside className="flex min-h-0 flex-col gap-3 border-r bg-sidebar/60 p-3" aria-label="Comptes et dossiers">
             {accountSelect}
             {composeButton}
-            <p className="truncate px-1 text-xs text-muted-foreground" title={account.address}>
-              {account.address}
-            </p>
+            <div className="flex min-w-0 items-center justify-between gap-2 px-1">
+              <p className="truncate text-xs text-muted-foreground" title={account.address}>
+                {account.address}
+              </p>
+              <VisibilityBadge account={account} className="shrink-0" />
+            </div>
             <nav aria-label="Dossiers" className="min-h-0 flex-1 overflow-y-auto">
               {folders.data ? (
                 <FolderNav folders={sorted} current={folder} onSelect={selectFolder} />
@@ -613,6 +655,9 @@ function Workspace({ accounts }: { accounts: MailAccount[] }) {
 
 export default function MailPage() {
   const accounts = useMailAccounts();
+  const preferences = usePreferences();
+  // On attend les préférences (boîte par défaut) pour ne pas ouvrir une boîte puis basculer sur une autre.
+  const ready = preferences.data !== undefined || preferences.isError;
   return (
     <QueryBoundary
       query={accounts}
@@ -650,7 +695,7 @@ export default function MailPage() {
             />
           </div>
         ) : (
-          <Workspace accounts={data} />
+          ready ? <Workspace accounts={data} defaultAccountId={preferences.data?.mail.defaultAccountId ?? null} /> : <ListSkeleton />
         )
       }
     </QueryBoundary>

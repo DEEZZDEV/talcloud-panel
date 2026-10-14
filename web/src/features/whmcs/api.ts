@@ -20,8 +20,8 @@ const toQuery = (params: ListParams): QueryParams => ({
   pageSize: params.pageSize,
 });
 
-export const useWhmcsOverview = () =>
-  useQuery({ queryKey: qk.whmcs.overview, queryFn: fetcher<Truncatable<WhmcsOverview>>('/api/whmcs/stats/overview'), staleTime: 60_000, refetchInterval: 5 * 60_000 });
+export const useWhmcsOverview = (enabled = true) =>
+  useQuery({ queryKey: qk.whmcs.overview, enabled, queryFn: fetcher<Truncatable<WhmcsOverview>>('/api/whmcs/stats/overview'), staleTime: 60_000, refetchInterval: 5 * 60_000 });
 
 export const useWhmcsMonthly = (months = 12) =>
   useQuery({ queryKey: qk.whmcs.monthly(months), queryFn: fetcher<Truncatable<WhmcsMonthlyStats>>('/api/whmcs/stats/monthly', { months }), staleTime: 5 * 60_000, placeholderData: keepPreviousData });

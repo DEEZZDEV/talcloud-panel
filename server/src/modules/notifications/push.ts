@@ -1,4 +1,4 @@
-import type { PanelNotification, PushPayload } from '@shared/api-types';
+import type { NotificationType, PanelNotification, PushPayload } from '@shared/api-types';
 import webpush from 'web-push';
 import { z } from 'zod';
 import { config } from '../../config.js';
@@ -7,6 +7,7 @@ import { upstreamFetch } from '../../core/http.js';
 import { getSettings, setSettings } from '../../core/settings.js';
 import { db, transaction } from '../../db/index.js';
 import { oneLine } from './format.js';
+import { acceptsPush } from './preferences.js';
 
 /** Espace de réglages INTERNE (aucune route ne l'expose) : paire de clés VAPID, chiffrée comme tout réglage. */
 const VAPID_NAMESPACE = 'notifications.vapid';
@@ -230,14 +231,24 @@ async function sendOne(row: SubscriptionRow, payload: string, keys: VapidKeys): 
   return res.ok ? 'sent' : 'failed';
 }
 
-/** Envoie une charge utile à tous les abonnements d'un compte (ou de tous si `userId` est null). Ne lève pas. */
-export async function sendPush(userId: number | null, payload: PushPayload): Promise<PushResult> {
+/**
+ * Envoie une charge utile à tous les abonnements d'un compte (ou de tous si `userId` est null). Avec `type`, seuls
+ * les abonnements dont le PROPRIÉTAIRE accepte ce type de notification en push sont sollicités. Ne lève pas.
+ */
+export async function sendPush(userId: number | null, payload: PushPayload, type?: NotificationType): Promise<PushResult> {
   const result: PushResult = { sent: 0, failed: 0, removed: 0 };
   let rows: SubscriptionRow[];
   let keys: VapidKeys;
   let body: string;
   try {
     rows = subscriptionsFor(userId);
+    if (type !== undefined) {
+      const accepted = new Map<number, boolean>();
+      rows = rows.filter((row) => {
+        if (!accepted.has(row.user_id)) accepted.set(row.user_id, acceptsPush(row.user_id, type));
+        return accepted.get(row.user_id) === true;
+      });
+    }
     if (rows.length === 0) return result;
     keys = vapidKeys();
     body = JSON.stringify(payload);
@@ -260,7 +271,7 @@ export function pushPayloadFor(notification: PanelNotification): PushPayload {
 }
 
 export const sendPushForNotification = (notification: PanelNotification, userId: number | null): Promise<PushResult> =>
-  sendPush(userId, pushPayloadFor(notification));
+  sendPush(userId, pushPayloadFor(notification), notification.type);
 
 export const sendTestPush = (userId: number): Promise<PushResult> =>
   sendPush(userId, { title: 'TalCloud Panel', body: 'Les notifications push fonctionnent sur cet appareil.', url: '/notifications', tag: 'push-test' });

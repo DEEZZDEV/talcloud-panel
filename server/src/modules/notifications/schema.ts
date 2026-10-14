@@ -18,4 +18,15 @@ export const migrations: Migration[] = [
       CREATE INDEX push_subscriptions_user_device ON push_subscriptions(user_id, device_id);
     `,
   },
+  {
+    // Préférences de confort propres à chaque administrateur (JSON validé par preferences.ts).
+    id: 'notifications_002_user_preferences',
+    sql: `
+      CREATE TABLE user_preferences (
+        user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        data       TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];

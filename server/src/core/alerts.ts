@@ -28,8 +28,14 @@ export interface SecurityAlert {
   summary: string;
   /** Détails affichés (IP, pays, navigateur…). JAMAIS de secret ni de code. Les valeurs sont échappées. */
   facts?: [label: string, value: string | null | undefined][];
-  /** Compte concerné (information ; l'alerte est toujours adressée aux deux administrateurs). */
+  /** Compte concerné (information ; l'alerte est adressée aux deux administrateurs, sauf `recipientUserId`). */
   userId?: number | null;
+  /**
+   * Destinataire UNIQUE : l'alerte ne part qu'à cet administrateur (mail à sa seule adresse, notification qui lui est
+   * propre) ; ni Discord de sécurité commun, ni notification commune. Pour un évènement qui ne regarde que lui
+   * (ex. sa boîte mail personnelle) et que l'autre administrateur ne doit pas connaître. Absent = comportement commun.
+   */
+  recipientUserId?: number;
   /**
    * Regroupement : au plus une alerte par clé et par `throttleMs` (défaut 10 min). À utiliser pour tout
    * évènement qu'un tiers peut provoquer à volonté (échecs de connexion), afin de ne pas saturer les boîtes mail.
@@ -91,6 +97,10 @@ function adminEmails(): string[] {
   return (db.prepare('SELECT email FROM users ORDER BY id').all() as { email: string }[]).map((row) => row.email);
 }
 
+function adminEmail(userId: number): string[] {
+  return (db.prepare('SELECT email FROM users WHERE id = ?').all(userId) as { email: string }[]).map((row) => row.email);
+}
+
 const DISCORD_COLORS: Record<NotificationSeverity, number> = { info: 0x3b82f6, success: 0x22c55e, warning: 0xf59e0b, critical: 0xef4444 };
 
 async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<void> {
@@ -101,7 +111,8 @@ async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<
 
   const tasks: Promise<unknown>[] = [];
 
-  const recipients = adminEmails();
+  const target = alert.recipientUserId ?? null;
+  const recipients = target === null ? adminEmails() : adminEmail(target);
   if (recipients.length) {
     const { text, html } = renderMail({
       title: alert.title,
@@ -111,7 +122,8 @@ async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<
     tasks.push(sendMail({ to: recipients, subject: `[TalCloud Panel] ${alert.title}`, text, html }));
   }
 
-  if (config.securityDiscordWebhookUrl) {
+  // Le salon Discord de sécurité est commun : jamais utilisé pour une alerte à destinataire unique.
+  if (config.securityDiscordWebhookUrl && target === null) {
     tasks.push(
       upstreamFetch('notifications', config.securityDiscordWebhookUrl, {
         method: 'POST',
@@ -144,7 +156,7 @@ async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<
       title: alert.title,
       body: alert.summary,
       data: { kind: alert.kind, userId: alert.userId ?? null, facts: Object.fromEntries(facts.map(([k, v]) => [k, v ?? null])) },
-      userId: null,
+      userId: target,
       channels: { push: true },
     }),
   );

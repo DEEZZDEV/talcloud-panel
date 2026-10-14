@@ -1,5 +1,5 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { CheckCheck, LoaderCircle, LogOut, Moon, PenSquare, Plus, Sun, UserRound } from 'lucide-react';
+import { Settings2, CheckCheck, LoaderCircle, LogOut, Moon, PenSquare, Plus, Sun, UserRound } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { NAV_ITEMS } from '@/components/layout/nav';
@@ -9,6 +9,7 @@ import { useAuth } from '@/features/auth/auth-context';
 import { useMarkAllRead } from '@/features/notifications/api';
 import { useWhmcsClients } from '@/features/whmcs/api';
 import { useDebounce } from '@/hooks/use-debounce';
+import { useThemeSetter } from '@/features/preferences/api';
 import { useTheme } from '@/hooks/use-theme';
 import { isNotConfigured } from '@/lib/api';
 import { clientStatus } from '@/lib/status';
@@ -28,7 +29,8 @@ interface Props {
 /** Recherche globale (Ctrl+K / ⌘K) : pages, actions rapides et clients WHMCS (recherche serveur avec anti-rebond). */
 export function CommandPalette({ open, onOpenChange }: Props) {
   const navigate = useNavigate();
-  const { theme, toggleTheme } = useTheme();
+  const { theme } = useTheme();
+  const { toggleTheme } = useThemeSetter();
   const { signOut } = useAuth();
   const markAll = useMarkAllRead();
   const [search, setSearch] = useState('');
@@ -49,6 +51,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   const actions = useMemo(
     () => [
       { id: 'compose', label: 'Écrire un nouveau message', keywords: 'mail email envoyer', icon: PenSquare, run: () => navigate('/mail?compose=1') },
+      { id: 'my-space', label: 'Personnaliser mon espace (thème, accueil, push)', keywords: 'préférences accueil blocs thème mon espace', icon: Settings2, run: () => navigate('/settings#mon-espace') },
       { id: 'cost', label: 'Ajouter un coût', keywords: 'dépense charge whmcs', icon: Plus, run: () => navigate('/whmcs/costs?new=1') },
       { id: 'read-all', label: 'Marquer toutes les notifications comme lues', keywords: 'notifications lu', icon: CheckCheck, run: () => markAll.mutate() },
       {

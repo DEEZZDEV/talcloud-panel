@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createTransport, type SMTPTransportOptions } from 'nodemailer';
 import MailComposer, { type MailComposerOptions } from 'nodemailer/lib/mail-composer';
-import { accountPassword, type MailAccountRow } from './accounts.js';
+import { accountPassword, recheckAccess, type BoundAccount, type MailAccountRow } from './accounts.js';
 import { toMailError, type ReplyContext } from './imap.js';
 import { cleanContentType, sanitizeFilename } from './sanitize.js';
 import { hasControlChars, isValidEmailAddress, tlsPolicy, type SendInput } from './validation.js';
@@ -48,10 +48,11 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-async function withTransport<T>(account: MailAccountRow, ms: number, fn: (transport: ReturnType<typeof createTransport>) => Promise<T>): Promise<T> {
+async function withTransport<T>(account: BoundAccount, ms: number, fn: (transport: ReturnType<typeof createTransport>) => Promise<T>): Promise<T> {
   let transport: ReturnType<typeof createTransport> | null = null;
   try {
-    transport = createTransport(smtpOptions(account, accountPassword(account)));
+    const current = recheckAccess(account);
+    transport = createTransport(smtpOptions(current, accountPassword(current)));
     return await withDeadline(fn(transport), ms);
   } catch (err) {
     throw toMailError(err);
@@ -65,7 +66,7 @@ async function withTransport<T>(account: MailAccountRow, ms: number, fn: (transp
 }
 
 /** Vérifie la connexion et l'authentification SMTP. */
-export async function testSmtp(account: MailAccountRow): Promise<void> {
+export async function testSmtp(account: BoundAccount): Promise<void> {
   await withTransport(account, VERIFY_TIMEOUT_MS, async (transport) => {
     await transport.verify();
   });
@@ -129,8 +130,10 @@ export interface SmtpSendResult {
   rejected: number;
 }
 
-export async function sendMessage(account: MailAccountRow, message: OutgoingMessage): Promise<SmtpSendResult> {
+export async function sendMessage(account: BoundAccount, message: OutgoingMessage): Promise<SmtpSendResult> {
   return withTransport(account, SEND_TIMEOUT_MS, async (transport) => {
+    // Dernier contrôle juste avant l'envoi (nodemailer se connecte au moment de sendMail).
+    recheckAccess(account);
     const info = (await transport.sendMail(message.options)) as { rejected?: unknown[] };
     return { messageId: message.messageId, rejected: Array.isArray(info.rejected) ? info.rejected.length : 0 };
   });

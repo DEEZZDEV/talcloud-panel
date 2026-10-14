@@ -7,6 +7,7 @@ import { ErrorBoundary } from '@/components/shared/error-boundary';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { IdleGuard } from '@/features/auth/idle-guard';
+import { PreferencesSync } from '@/features/preferences/api';
 import { useServerEvents } from '@/features/notifications/use-server-events';
 import { cn, readPreference, writePreference } from '@/lib/utils';
 
@@ -99,6 +100,7 @@ export default function AppLayout() {
 
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <IdleGuard />
+      <PreferencesSync />
     </div>
   );
 }
