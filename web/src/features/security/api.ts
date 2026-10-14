@@ -1,4 +1,4 @@
-import type { AuditEntry, BackupCodes, BackupCodesStatus, ChangePasswordRequest, IpAllowlist, IpAllowlistUpdate, KnownDevice, SessionInfo, TotpSetup } from '@shared/api-types';
+import type { AuditEntry, BackupCodes, BackupCodesStatus, ChangePasswordRequest, IpAllowlist, IpAllowlistUpdate, KnownDevice, PushSubscriptionInfo, SessionInfo, TotpSetup } from '@shared/api-types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { fetcher, keepPreviousData, pageFetcher, qk } from '@/lib/query';
@@ -6,6 +6,9 @@ import { fetcher, keepPreviousData, pageFetcher, qk } from '@/lib/query';
 export const useSessions = () => useQuery({ queryKey: qk.security.sessions, queryFn: fetcher<SessionInfo[]>('/api/security/sessions'), staleTime: 15_000 });
 export const useDevices = () => useQuery({ queryKey: qk.security.devices, queryFn: fetcher<KnownDevice[]>('/api/security/devices'), staleTime: 30_000 });
 export const useIpAllowlist = () => useQuery({ queryKey: qk.security.allowlist, queryFn: fetcher<IpAllowlist>('/api/security/ip-allowlist'), staleTime: 30_000 });
+/** Abonnements push du compte (sous la clé « security » : invalidés avec le reste après chaque action de sécurité). */
+const pushSubscriptionsKey = [...qk.security.all, 'push-subscriptions'] as const;
+export const usePushSubscriptions = () => useQuery({ queryKey: pushSubscriptionsKey, queryFn: fetcher<PushSubscriptionInfo[]>('/api/push/subscriptions'), staleTime: 30_000 });
 export const useBackupCodesStatus = () => useQuery({ queryKey: qk.security.backupCodes, queryFn: fetcher<BackupCodesStatus>('/api/security/backup-codes'), staleTime: 30_000 });
 
 export interface AuditFilters {
@@ -43,6 +46,12 @@ export function useRevokeOtherSessions() {
 export function useForgetDevice() {
   const invalidate = useInvalidateSecurity();
   return useMutation({ mutationFn: (id: number) => api.delete(`/api/security/devices/${encodeURIComponent(String(id))}`), onSuccess: invalidate });
+}
+
+/** Retrait d'un abonnement push (step-up demandé par le client API). */
+export function useRemovePushSubscription() {
+  const invalidate = useInvalidateSecurity();
+  return useMutation({ mutationFn: (id: number) => api.delete(`/api/push/subscriptions/${encodeURIComponent(String(id))}`), onSuccess: invalidate });
 }
 
 export function useUpdateAllowlist() {

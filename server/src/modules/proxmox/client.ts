@@ -1,6 +1,6 @@
 import { Agent } from 'undici';
 import { AppError, upstream } from '../../core/errors.js';
-import { upstreamFetch } from '../../core/http.js';
+import { upstreamFetch, readBodyLimited } from '../../core/http.js';
 import type { ConfiguredSettings, ProxmoxSettings } from './settings.js';
 
 /**
@@ -156,9 +156,10 @@ export async function pveRequest(settings: ConfiguredSettings, request: PveReque
     await res.body?.cancel().catch(() => undefined);
     throw statusError(res.status, context);
   }
+  const raw = await readBodyLimited('proxmox', res);
   let body: unknown;
   try {
-    body = await res.json();
+    body = JSON.parse(raw);
   } catch {
     throw upstream('proxmox', 'Réponse illisible de Proxmox (l’URL pointe-t-elle bien vers l’API ?)', { kind: 'invalid' });
   }

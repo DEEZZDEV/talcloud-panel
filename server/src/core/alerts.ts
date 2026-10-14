@@ -1,4 +1,5 @@
 import type { NotificationSeverity } from '@shared/api-types';
+import { discordText } from './discord-text.js';
 import { config } from '../config.js';
 import { db } from '../db/index.js';
 import { notify } from '../modules/notifications/service.js';
@@ -111,7 +112,6 @@ async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<
   }
 
   if (config.securityDiscordWebhookUrl) {
-    const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
     tasks.push(
       upstreamFetch('notifications', config.securityDiscordWebhookUrl, {
         method: 'POST',
@@ -123,10 +123,12 @@ async function deliver(alert: SecurityAlert, suppressedBefore: number): Promise<
           allowed_mentions: { parse: [] },
           embeds: [
             {
-              title: clip(alert.title, 250),
-              description: clip(alert.summary, 1000),
+              // Tout le texte est échappé : l'User-Agent ou un identifiant saisi par un anonyme ne peut pas y
+              // glisser de lien masqué, de mise en forme ni d'URL cliquable (hameçonnage des administrateurs).
+              title: discordText(alert.title, 250),
+              description: discordText(alert.summary, 1000),
               color: DISCORD_COLORS[severity],
-              fields: facts.slice(0, 20).map(([name, value]) => ({ name: clip(name, 250), value: clip(value || 'inconnu', 1000), inline: true })),
+              fields: facts.slice(0, 20).map(([name, value]) => ({ name: discordText(name, 250), value: discordText(value || 'inconnu', 1000), inline: true })),
               timestamp: new Date().toISOString(),
             },
           ],

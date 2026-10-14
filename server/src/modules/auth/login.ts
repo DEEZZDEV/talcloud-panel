@@ -6,6 +6,7 @@ import { audit } from '../../core/audit.js';
 import { hmac, randomDigits, randomToken, safeEqual, sha256 } from '../../core/crypto.js';
 import { AppError, accountLocked, badRequest, invalidCredentials, rateLimited, unauthenticated } from '../../core/errors.js';
 import { db } from '../../db/index.js';
+import { removePushForDevice } from '../notifications/push.js';
 import { backupCodesStatus, consumeBackupCode, findBackupCode } from './backup-codes.js';
 import { deviceLabel } from './device.js';
 import {
@@ -232,9 +233,21 @@ export default async function loginRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/auth/login', { config: { public: true } }, async (request, reply): Promise<{ data: LoginStepResponse }> => {
     const body = loginSchema.parse(request.body);
 
-    // Les tentatives sur un même identifiant (connu ou non : pas d'écart de temps exploitable) passent une par
-    // une : chacune voit les échecs et verrous laissés par la précédente.
-    const user = await serialized(`login:${sha256(body.identifier.toLowerCase())}`, async (): Promise<UserRow> => {
+    // Les tentatives passent une par une : chacune voit les échecs et verrous laissés par la précédente.
+    // La file est choisie AVANT d'attendre, par deux lectures SQL bon marché (même coût que l'appareil soit
+    // inconnu, le compte existant ou non) :
+    //  - appareil déjà confirmé par ce compte → file propre à cet appareil : un flot anonyme qui sature la file
+    //    plafonnée du compte ne peut pas empêcher le titulaire de se connecter depuis son appareil connu ;
+    //  - appareil inconnu → une file plafonnée commune au compte (nom d'utilisateur et e-mail confondus), ou une
+    //    file par identifiant s'il ne correspond à aucun compte.
+    const target = findUserByIdentifier(body.identifier);
+    const requestDevice = deviceIdFromRequest(request);
+    const queue = !target
+      ? `login:inconnu:${sha256(body.identifier.trim().toLowerCase())}`
+      : requestDevice && isKnownDevice(target.id, requestDevice)
+        ? `login:${target.id}:known:${requestDevice}`
+        : `login:${target.id}:unknown`;
+    const user = await serialized(queue, async (): Promise<UserRow> => {
       const found = findUserByIdentifier(body.identifier);
       // Toujours une vérification Argon2id, même si le compte n'existe pas (temps de réponse équivalent).
       const passwordOk = found ? await verifyPassword(found.password_hash, body.password) : await verifyDummyPassword(body.password);
@@ -513,9 +526,12 @@ export default async function loginRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/auth/logout', async (request, reply) => {
     const auth = request.auth;
     if (!auth) throw unauthenticated();
+    const deviceId = requestSession(request)?.device_id ?? null;
     revokeSession(auth.user.id, auth.sessionId);
+    // Un appareil déconnecté ne reçoit plus de notifications push.
+    const pushRemoved = removePushForDevice(auth.user.id, deviceId);
     clearSessionCookie(reply);
-    audit(request, { action: 'auth.logout', target: `compte ${auth.user.username}` });
+    audit(request, { action: 'auth.logout', target: `compte ${auth.user.username}`, details: { pushRemoved } });
     return { data: { ok: true } };
   });
 

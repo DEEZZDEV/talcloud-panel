@@ -68,10 +68,40 @@ function parseTrustProxy(value: string): boolean | string[] {
   return csv(value);
 }
 
-function load() {
+/**
+ * Entrée trop large pour un proxy de confiance : tout pair concerné pourrait usurper son IP via X-Forwarded-For.
+ * Refusés : plages plus larges qu'un /16 (IPv4) ou un /48 (IPv6), et les alias qui couvrent des réseaux entiers.
+ */
+function isTooBroad(entry: string): boolean {
+  const value = entry.trim().toLowerCase();
+  if (value === 'uniquelocal' || value === 'linklocal') return true;
+  const match = /\/(\d{1,3})$/.exec(value);
+  if (!match) return false;
+  const prefix = Number(match[1]);
+  return value.includes(':') ? prefix < 48 : prefix < 16;
+}
+
+/** Webhook Discord : https et hôte Discord uniquement (les alertes de sécurité ne partent jamais en clair ailleurs). */
+function isDiscordWebhook(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return (
+      url.protocol === 'https:' &&
+      ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com'].includes(url.hostname) &&
+      url.pathname.startsWith('/api/webhooks/') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Charge et valide la configuration. Exportée pour les tests ; l'application utilise `config`. */
+export function loadConfig(source: NodeJS.ProcessEnv = process.env) {
   // Une variable vide (« CLE= ») est traitée comme absente.
   const env: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(source)) {
     if (value !== undefined && value.trim() !== '') env[key] = value;
   }
 
@@ -89,6 +119,16 @@ function load() {
   if (isProd && !(e.SMTP_HOST && e.SMTP_FROM)) {
     problems.push('SMTP_HOST et SMTP_FROM sont obligatoires en production (codes de connexion et alertes par mail)');
   }
+  if (e.SECURITY_DISCORD_WEBHOOK_URL && !isDiscordWebhook(e.SECURITY_DISCORD_WEBHOOK_URL)) {
+    problems.push('SECURITY_DISCORD_WEBHOOK_URL doit être une URL https://discord.com/api/webhooks/…');
+  }
+  const trustProxy = parseTrustProxy(e.TRUST_PROXY);
+  if (isProd && trustProxy === true) {
+    problems.push("TRUST_PROXY=true est refusé en production : indiquez l'IP (ou le petit sous-réseau) de votre proxy inverse");
+  }
+  if (isProd && Array.isArray(trustProxy) && trustProxy.some(isTooBroad)) {
+    problems.push('TRUST_PROXY contient une plage trop large : seuls les proxys inverses doivent être de confiance');
+  }
   if (problems.length) throw new Error(`Configuration invalide (.env) :\n${problems.map((p) => `  - ${p}`).join('\n')}`);
 
   return {
@@ -102,7 +142,7 @@ function load() {
     dbPath: e.DB_PATH ?? resolve(e.DATA_DIR, 'talcloud.db'),
     masterKey: Buffer.from(e.MASTER_KEY, 'hex'),
     sessionSecret: e.SESSION_SECRET,
-    trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    trustProxy,
     sessionIdleMs: e.SESSION_IDLE_MINUTES * 60_000,
     sessionMaxMs: e.SESSION_MAX_HOURS * 3_600_000,
     stepUpMs: e.STEP_UP_MINUTES * 60_000,
@@ -127,5 +167,5 @@ function load() {
   } as const;
 }
 
-export type Config = ReturnType<typeof load>;
-export const config: Config = load();
+export type Config = ReturnType<typeof loadConfig>;
+export const config: Config = loadConfig();

@@ -1,7 +1,7 @@
 import type { PowerSignal } from '@shared/api-types';
 import { z } from 'zod';
 import { AppError, notFound, upstream } from '../../core/errors.js';
-import { upstreamFetch } from '../../core/http.js';
+import { upstreamFetch, readBodyLimited } from '../../core/http.js';
 import type { PanelCredentials } from './settings.js';
 
 /**
@@ -95,8 +95,9 @@ async function call(creds: PanelCredentials, api: Api, path: string, options: Ca
       await res.body?.cancel().catch(() => undefined);
       return undefined;
     }
+    const raw = await readBodyLimited('pterodactyl', res);
     try {
-      return await res.json();
+      return JSON.parse(raw);
     } catch {
       throw upstream('pterodactyl', 'Réponse illisible de Pterodactyl', { api });
     }

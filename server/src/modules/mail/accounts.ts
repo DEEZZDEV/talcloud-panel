@@ -106,9 +106,16 @@ export function updateAccount(id: number, input: AccountUpdateInput): UpdateResu
     const newPassword = input.password !== undefined && input.password !== '' ? input.password : null;
     // Le mot de passe enregistré n'est jamais envoyé à un AUTRE serveur que celui pour lequel il a été saisi :
     // changer d'hôte impose de le ressaisir (sinon une session détournée pourrait l'exfiltrer vers un hôte choisi).
-    const hostChanged = current.imap_host !== input.imapHost || current.smtp_host !== input.smtpHost;
-    if (hostChanged && newPassword === null) {
-      throw badRequest('Le mot de passe doit être ressaisi lorsque le serveur IMAP ou SMTP change', { fieldErrors: { password: ['Mot de passe requis'] } });
+    // Hôte, port ET mode TLS forment la destination : changer l'un d'eux impose aussi la ressaisie.
+    const destinationChanged =
+      current.imap_host.toLowerCase() !== input.imapHost.toLowerCase() ||
+      current.imap_port !== input.imapPort ||
+      Boolean(current.imap_secure) !== input.imapSecure ||
+      current.smtp_host.toLowerCase() !== input.smtpHost.toLowerCase() ||
+      current.smtp_port !== input.smtpPort ||
+      Boolean(current.smtp_secure) !== input.smtpSecure;
+    if (destinationChanged && newPassword === null) {
+      throw badRequest('Le mot de passe doit être ressaisi lorsque le serveur, le port ou le chiffrement IMAP/SMTP change', { fieldErrors: { password: ['Mot de passe requis'] } });
     }
     updateRow.run(
       input.label,

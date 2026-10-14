@@ -1,12 +1,23 @@
-import type { PanelNotification, PushPublicKey, SettingsTestResult, UnreadCount } from '@shared/api-types';
+import type { PanelNotification, PushPublicKey, PushSubscriptionInfo, SettingsTestResult, UnreadCount } from '@shared/api-types';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../../core/audit.js';
-import { notFound, unauthenticated } from '../../core/errors.js';
+import { badRequest, notFound, unauthenticated } from '../../core/errors.js';
 import { currentUser } from '../../core/request.js';
 import { registerSettingsRoutes } from '../../core/settings-routes.js';
 import { sendDiscordTest } from './discord.js';
-import { getVapidPublicKey, pushSubscribeSchema, pushUnsubscribeSchema, removeSubscription, saveSubscription, sendTestPush } from './push.js';
+import { deviceLabel } from '../auth/device.js';
+import { requestSession } from '../auth/sessions.js';
+import {
+  getVapidPublicKey,
+  listPushSubscriptions,
+  pushSubscribeSchema,
+  pushUnsubscribeSchema,
+  removePushSubscriptionById,
+  removeSubscription,
+  saveSubscription,
+  sendTestPush,
+} from './push.js';
 import { flushNotifications } from './service.js';
 import { notificationSettingsSchema, SETTINGS_NAMESPACE, type NotificationSettings } from './settings.js';
 import { closeAllStreams, EventStream } from './sse.js';
@@ -85,12 +96,45 @@ export default async function notificationsRoutes(app: FastifyInstance): Promise
   // ── Push navigateur ──
   app.get('/api/push/public-key', async (): Promise<{ data: PushPublicKey }> => ({ data: { publicKey: getVapidPublicKey() } }));
 
-  app.post('/api/push/subscribe', async (request) => {
+  // Abonner un navigateur ouvre un canal qui survit à la session : step-up exigé, et l'abonnement est lié à
+  // l'appareil de la session (retiré à sa déconnexion, à l'oubli de l'appareil, aux changements de secrets…).
+  app.post('/api/push/subscribe', { config: { stepUp: true } }, async (request) => {
     const user = currentUser(request);
     const subscription = pushSubscribeSchema.parse(request.body);
-    saveSubscription(user.id, subscription, request.client.userAgent || null);
+    const session = requestSession(request);
+    const deviceId = session?.device_id ?? null;
+    if (!session || !deviceId || request.client.deviceId !== deviceId) {
+      audit(request, { action: 'notifications.push.subscribe', target: endpointHost(subscription.endpoint), success: false, details: { reason: 'no_device' } });
+      throw badRequest('Appareil non identifié : reconnectez-vous depuis ce navigateur pour activer les notifications push');
+    }
+    saveSubscription({ userId: user.id, deviceId, sessionId: session.id }, subscription, request.client.userAgent || null);
     audit(request, { action: 'notifications.push.subscribe', target: endpointHost(subscription.endpoint) });
     return { data: { subscribed: true } };
+  });
+
+  app.get('/api/push/subscriptions', async (request): Promise<{ data: PushSubscriptionInfo[] }> => {
+    const user = currentUser(request);
+    const currentDevice = requestSession(request)?.device_id ?? null;
+    return {
+      data: listPushSubscriptions(user.id).map((row) => ({
+        id: row.id,
+        deviceLabel: deviceLabel(row.user_agent),
+        createdAt: new Date(row.created_at).toISOString(),
+        current: currentDevice !== null && row.device_id === currentDevice,
+      })),
+    };
+  });
+
+  app.delete('/api/push/subscriptions/:id', { config: { stepUp: true } }, async (request) => {
+    const user = currentUser(request);
+    const { id } = idParamSchema.parse(request.params);
+    // Abonnement inexistant ou appartenant à l'autre administrateur : même réponse.
+    if (!removePushSubscriptionById(user.id, id)) {
+      audit(request, { action: 'notifications.push.remove', target: `abonnement push #${id}`, success: false });
+      throw notFound('Abonnement introuvable');
+    }
+    audit(request, { action: 'notifications.push.remove', target: `abonnement push #${id}` });
+    return { data: { ok: true } };
   });
 
   app.post('/api/push/unsubscribe', async (request) => {

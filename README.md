@@ -47,7 +47,7 @@ Renseignez `.env` :
 | `PUBLIC_URL` | URL publique exacte, `https://` + le domaine, sans slash final. Toute requête arrivant par une autre origine est refusée. |
 | `MASTER_KEY` | Clé de chiffrement AES-256 des secrets en base. `openssl rand -hex 32` |
 | `SESSION_SECRET` | Secret des jetons de session et des codes. `openssl rand -base64 48` |
-| `TRUST_PROXY` | `uniquelocal` avec le docker-compose fourni (Caddy devant le panel). |
+| `TRUST_PROXY` | `172.30.0.2` avec le docker-compose fourni : l'IP fixe de Caddy, seul pair dont l'IP client annoncée est crue. Jamais `true` ni une large plage (refusé en production). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | SMTP du panel. `SMTP_SECURE=true` pour le port 465, `false` pour 587 (STARTTLS alors exigé). |
 | `SECURITY_DISCORD_WEBHOOK_URL` | (optionnel) Webhook Discord recevant les alertes de sécurité. |
 | `IP_ALLOWLIST` | (optionnel) IP ou CIDR autorisés, séparés par des virgules. Vide = pas de filtrage. |
@@ -267,6 +267,9 @@ git pull && docker compose up -d --build
 ```
 
 Les migrations de base s'appliquent automatiquement au démarrage.
+
+> Depuis la version qui lie les notifications push à l'appareil, les abonnements push existants sont effacés à la
+> mise à jour : réactivez le push dans *Réglages → Notifications* sur chaque navigateur concerné.
 
 ---
 

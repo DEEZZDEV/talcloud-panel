@@ -20,9 +20,13 @@ export function encrypt(plain: string, context = ''): string {
 export function decrypt(payload: string, context = ''): string {
   const [version, iv, tag, data] = payload.split(':');
   if (version !== 'v1' || !iv || !tag || data === undefined) throw new Error('Format de donnée chiffrée invalide');
-  const decipher = createDecipheriv('aes-256-gcm', encKey, Buffer.from(iv, 'base64url'));
+  const ivBytes = Buffer.from(iv, 'base64url');
+  const tagBytes = Buffer.from(tag, 'base64url');
+  // Étiquette d'authenticité complète exigée (16 octets) : une étiquette tronquée réduirait la protection à 32 bits.
+  if (ivBytes.length !== 12 || tagBytes.length !== 16) throw new Error('Format de donnée chiffrée invalide');
+  const decipher = createDecipheriv('aes-256-gcm', encKey, ivBytes, { authTagLength: 16 });
   decipher.setAAD(Buffer.from(context, 'utf8'));
-  decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+  decipher.setAuthTag(tagBytes);
   return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8');
 }
 

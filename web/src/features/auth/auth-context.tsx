@@ -1,5 +1,6 @@
 import type { AdminUser, SessionState } from '@shared/api-types';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { dropLocalPushSubscription } from '@/features/notifications/push';
 import { api, setCsrfToken, setStepUpGrantedHandler, setUnauthenticatedHandler, stepUpStore } from '@/lib/api';
 import { queryClient } from '@/lib/query';
 
@@ -34,6 +35,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /** Vide tout l'état en mémoire : jeton CSRF, cache de données, demande de 2FA en cours. */
   const clearLocalState = useCallback((reason: SignedOutReason) => {
+    // Déconnexion volontaire ou session révoquée : ce navigateur cesse de recevoir les notifications push (le serveur a
+    // déjà supprimé l'abonnement). Une simple expiration d'inactivité les conserve : c'est leur raison d'être.
+    // Sans attente : la déconnexion n'est jamais bloquée par le service worker.
+    if (reason === 'logout' || reason === 'revoked') void dropLocalPushSubscription();
     setCsrfToken(null);
     stepUpStore.cancel();
     queryClient.cancelQueries().catch(() => undefined);

@@ -108,13 +108,28 @@ interface SubscriptionRow {
 const keysContext = (endpoint: string) => `push:${endpoint}`;
 
 /** Enregistre (ou rattache à l'utilisateur courant) un abonnement. Les clés sont chiffrées en base. */
-export function saveSubscription(userId: number, subscription: z.infer<typeof pushSubscribeSchema>, userAgent: string | null): void {
+export interface SubscriptionOwner {
+  userId: number;
+  /** Identifiant d'appareil (HMAC du cookie d'appareil), obligatoire. */
+  deviceId: string;
+  sessionId: string | null;
+}
+
+/**
+ * Enregistre un abonnement, rattaché au compte ET à l'appareil courants. Un point de terminaison déjà connu
+ * (même navigateur réabonné, éventuellement par l'autre compte ou depuis un autre appareil) remplace l'ancien.
+ * Les clés sont chiffrées en base.
+ */
+export function saveSubscription(owner: SubscriptionOwner, subscription: z.infer<typeof pushSubscribeSchema>, userAgent: string | null): void {
+  if (!owner.deviceId) throw new Error('Appareil non identifié');
+  const { userId } = owner;
   const keysEnc = encryptJson(subscription.keys, keysContext(subscription.endpoint));
   transaction(() => {
     db.prepare(
-      `INSERT INTO push_subscriptions (user_id, endpoint, keys_enc, user_agent, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, keys_enc = excluded.keys_enc, user_agent = excluded.user_agent, created_at = excluded.created_at`,
-    ).run(userId, subscription.endpoint, keysEnc, userAgent?.slice(0, 512) ?? null, Date.now());
+      `INSERT INTO push_subscriptions (user_id, endpoint, keys_enc, user_agent, created_at, device_id, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, keys_enc = excluded.keys_enc, user_agent = excluded.user_agent,
+         created_at = excluded.created_at, device_id = excluded.device_id, session_id = excluded.session_id`,
+    ).run(userId, subscription.endpoint, keysEnc, userAgent?.slice(0, 512) ?? null, Date.now(), owner.deviceId, owner.sessionId);
     // Plafond par compte : les plus anciens abonnements sont retirés.
     db.prepare(
       'DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN (SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?)',
@@ -127,12 +142,55 @@ export function removeSubscription(userId: number, endpoint: string): boolean {
   return db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').run(endpoint, userId).changes > 0;
 }
 
+// Seuls les abonnements d'un appareil encore connu du compte reçoivent quelque chose.
+const KNOWN_DEVICE = 'EXISTS (SELECT 1 FROM known_devices k WHERE k.user_id = p.user_id AND k.device_hash = p.device_id)';
+
 function subscriptionsFor(userId: number | null): SubscriptionRow[] {
+  // Ménage : un abonnement dont l'appareil n'est plus connu (oublié, ou ancienne ligne sans appareil) est supprimé.
+  db.prepare(
+    'DELETE FROM push_subscriptions WHERE NOT EXISTS (SELECT 1 FROM known_devices k WHERE k.user_id = push_subscriptions.user_id AND k.device_hash = push_subscriptions.device_id)',
+  ).run();
   return (
     userId === null
-      ? db.prepare('SELECT id, user_id, endpoint, keys_enc FROM push_subscriptions').all()
-      : db.prepare('SELECT id, user_id, endpoint, keys_enc FROM push_subscriptions WHERE user_id = ?').all(userId)
+      ? db.prepare(`SELECT p.id, p.user_id, p.endpoint, p.keys_enc FROM push_subscriptions p WHERE ${KNOWN_DEVICE}`).all()
+      : db.prepare(`SELECT p.id, p.user_id, p.endpoint, p.keys_enc FROM push_subscriptions p WHERE p.user_id = ? AND ${KNOWN_DEVICE}`).all(userId)
   ) as SubscriptionRow[];
+}
+
+// ── Retrait des abonnements (appelé par le module d'authentification et la CLI) ──
+
+/** Retire les abonnements d'un appareil du compte (déconnexion, révocation d'une session, oubli de l'appareil). */
+export function removePushForDevice(userId: number, deviceId: string | null | undefined): number {
+  if (!deviceId) return 0;
+  return db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND device_id = ?').run(userId, deviceId).changes;
+}
+
+/** Retire tous les abonnements du compte sauf ceux de l'appareil courant (tous si l'appareil est inconnu). */
+export function removePushExceptDevice(userId: number, deviceId: string | null | undefined): number {
+  if (!deviceId) return removeAllPush(userId);
+  return db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND device_id IS NOT ?').run(userId, deviceId).changes;
+}
+
+/** Retire tous les abonnements du compte (commandes de secours de la CLI). */
+export function removeAllPush(userId: number): number {
+  return db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId).changes;
+}
+
+export interface PushSubscriptionRow {
+  id: number;
+  device_id: string;
+  user_agent: string | null;
+  created_at: number;
+}
+
+/** Abonnements du compte (sans point de terminaison ni clés). */
+export function listPushSubscriptions(userId: number): PushSubscriptionRow[] {
+  return db.prepare('SELECT id, device_id, user_agent, created_at FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC, id DESC').all(userId) as PushSubscriptionRow[];
+}
+
+/** Supprime un abonnement du compte par son identifiant. false s'il n'existe pas ou appartient à l'autre compte. */
+export function removePushSubscriptionById(userId: number, id: number): boolean {
+  return db.prepare('DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?').run(id, userId).changes === 1;
 }
 
 const deleteSubscription = (id: number): void => void db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(id);

@@ -1,5 +1,6 @@
-import type { AuditEntry, BackupCodes, KnownDevice, SessionInfo, TotpSetup } from '@shared/api-types';
+import type { AuditEntry, BackupCodes, KnownDevice, PushSubscriptionInfo, SessionInfo, TotpSetup } from '@shared/api-types';
 import {
+  BellRing,
   Check,
   CircleCheck,
   CircleX,
@@ -42,6 +43,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/features/auth/auth-context';
+import { dropLocalPushSubscription } from '@/features/notifications/push';
 import {
   useAudit,
   useBackupCodesStatus,
@@ -50,8 +52,10 @@ import {
   useDevices,
   useForgetDevice,
   useIpAllowlist,
+  usePushSubscriptions,
   useRegenerateBackupCodes,
   useRegenerateTotp,
+  useRemovePushSubscription,
   useRevokeOtherSessions,
   useRevokeSession,
   useSessions,
@@ -394,6 +398,81 @@ function DevicesTab() {
           const device = target;
           setTarget(null);
           forget.mutate(device.id, { onSuccess: () => toast.success('Appareil oublié', { description: device.label }), onError: notifyError('Action impossible') });
+        }}
+      />
+    </Card>
+  );
+}
+
+/** Appareils abonnés aux notifications push : un abonnement inconnu doit pouvoir être retiré immédiatement. */
+function PushSubscriptionsCard() {
+  const subscriptions = usePushSubscriptions();
+  const remove = useRemovePushSubscription();
+  const [target, setTarget] = useState<PushSubscriptionInfo | null>(null);
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader>
+        <CardTitle>Notifications push</CardTitle>
+        <CardDescription>
+          Navigateurs qui reçoivent les alertes de sécurité, commandes et paiements de ce compte, même panel fermé. Un abonnement est retiré automatiquement à la déconnexion de son appareil, à
+          l'oubli de l'appareil et lors d'un changement de mot de passe ou de double authentification.
+        </CardDescription>
+      </CardHeader>
+      <div className="border-t">
+        <QueryBoundary
+          query={subscriptions}
+          skeleton={<RowsSkeleton rows={2} />}
+          isEmpty={(data) => data.length === 0}
+          empty={<EmptyState compact icon={BellRing} title="Aucun appareil abonné" description="Activez les notifications push depuis les réglages, sur chaque appareil concerné." />}
+        >
+          {(data) => (
+            <ul className="divide-y">
+              {data.map((subscription) => {
+                const Icon = deviceIcon(subscription.deviceLabel);
+                return (
+                  <li key={subscription.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:px-5">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <span className="flex size-10 shrink-0 items-center justify-center rounded-full border bg-muted text-muted-foreground">
+                        <Icon className="size-[18px]" aria-hidden />
+                      </span>
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                          <span className="break-words">{subscription.deviceLabel}</span>
+                          {subscription.current ? <Badge tone="success">Cet appareil</Badge> : null}
+                        </p>
+                        <p className="text-xs text-muted-foreground">Abonné le {formatDateTime(subscription.createdAt)}</p>
+                      </div>
+                    </div>
+                    <Button variant="outline" size="sm" className="self-start sm:self-auto" onClick={() => setTarget(subscription)} disabled={remove.isPending}>
+                      Retirer
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </QueryBoundary>
+      </div>
+      <ConfirmDialog
+        open={target !== null}
+        onOpenChange={(open) => (!open ? setTarget(null) : undefined)}
+        title="Retirer cet abonnement ?"
+        description={`« ${target?.deviceLabel ?? ''} » ne recevra plus de notifications push de ce compte.`}
+        confirmLabel="Retirer l'abonnement"
+        destructive
+        onConfirm={() => {
+          if (!target) return;
+          const subscription = target;
+          setTarget(null);
+          remove.mutate(subscription.id, {
+            onSuccess: () => {
+              // Abonnement de ce navigateur : on le retire aussi localement (sans attendre).
+              if (subscription.current) void dropLocalPushSubscription();
+              toast.success('Abonnement retiré', { description: subscription.deviceLabel });
+            },
+            onError: notifyError('Action impossible'),
+          });
         }}
       />
     </Card>
@@ -961,7 +1040,13 @@ function AllowlistCard() {
 const TABS: { value: string; label: string; icon: typeof History; content: () => ReactNode }[] = [
   { value: 'sessions', label: 'Sessions', icon: MonitorSmartphone, content: () => <SessionsTab /> },
   { value: 'journal', label: 'Journal', icon: History, content: () => <AuditTab /> },
-  { value: 'appareils', label: 'Appareils', icon: Laptop, content: () => <DevicesTab /> },
+  { value: 'appareils', label: 'Appareils', icon: Laptop, content: () => (
+      <div className="flex flex-col gap-4">
+        <DevicesTab />
+        <PushSubscriptionsCard />
+      </div>
+    ),
+  },
   {
     value: 'authentification',
     label: 'Authentification',

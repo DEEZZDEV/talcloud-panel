@@ -1,9 +1,14 @@
 **/node_modules
 **/dist
-data
-.env
-.env.*
+**/data
+**/.env
+**/.env.*
+**/*.db
+**/*.db-wal
+**/*.db-shm
 .git
+.github
+.gitattributes
 *.md
 whmcs-hook
 server/test

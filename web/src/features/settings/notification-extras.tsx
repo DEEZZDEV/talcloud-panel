@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TestResult } from '@/features/settings/integration-section';
 import { currentPushSubscription, disablePush, enablePush, pushSupport, sendTestPush } from '@/features/notifications/push';
-import { errorMessage } from '@/lib/api';
+import { errorMessage, isStepUpCancelled } from '@/lib/api';
 import { isRecord } from '@/lib/utils';
 import type { SettingsTestResult } from '@shared/api-types';
 
@@ -132,6 +132,8 @@ export function PushSettings() {
         toast.success('Notifications push activées sur cet appareil');
       }
     } catch (error) {
+      // Code 2FA demandé puis annulé : rien n'a changé, pas de message d'erreur.
+      if (isStepUpCancelled(error)) return;
       toast.error(subscribed ? 'Désactivation impossible' : 'Activation impossible', { description: error instanceof Error && error.name !== 'ApiError' ? error.message : errorMessage(error) });
     } finally {
       setBusy(null);

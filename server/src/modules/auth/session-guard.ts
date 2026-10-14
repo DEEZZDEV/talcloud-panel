@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { audit } from '../../core/audit.js';
 import { accountLocked, invalidCredentials, type AppError } from '../../core/errors.js';
+import { removePushForDevice } from '../notifications/push.js';
 import { recordAuthFailure, type FailureKind } from './lockout.js';
 import { clearSessionCookie, requestSession, revokeSession } from './sessions.js';
 import type { UserRow } from './users.js';
@@ -18,6 +19,7 @@ export function sessionAuthFailure(request: FastifyRequest, reply: FastifyReply,
   if (session) {
     audit(request, { action: 'security.session.revoke', target: `session ${session.id}`, details: { reason: `${kind}_failures`, current: true } });
     revokeSession(user.id, session.id);
+    removePushForDevice(user.id, session.device_id);
     clearSessionCookie(reply);
   }
   return accountLocked(Math.ceil((lockedUntil - Date.now()) / 1000));

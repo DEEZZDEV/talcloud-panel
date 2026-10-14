@@ -32,6 +32,43 @@ export async function upstreamFetch(integration: IntegrationName, url: string | 
   }
 }
 
+/** Plafond par défaut d'une réponse distante : une page légitime fait bien moins de 1 Mo. */
+export const MAX_UPSTREAM_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Lit le corps d'une réponse distante en texte, sans jamais dépasser `maxBytes` en mémoire : une API compromise
+ * (ou un intermédiaire, si TLS n'est pas vérifié) ne peut pas épuiser la mémoire du panel avec une réponse géante.
+ * Au-delà du plafond, le flux est abandonné et une UPSTREAM_ERROR est levée.
+ */
+export async function readBodyLimited(integration: IntegrationName, res: Response, maxBytes = MAX_UPSTREAM_BYTES): Promise<string> {
+  const tooLarge = () => upstream(integration, `Réponse trop volumineuse de ${LABELS[integration]}`, { kind: 'too_large' });
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    throw tooLarge();
+  }
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw upstream(integration, `Réponse interrompue de ${LABELS[integration]}`);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /** Variante JSON : lève UPSTREAM_ERROR si le statut n'est pas 2xx ou si le corps n'est pas du JSON. */
 export async function upstreamJson<T>(integration: IntegrationName, url: string | URL, options: UpstreamOptions = {}): Promise<T> {
   const res = await upstreamFetch(integration, url, options);
@@ -40,10 +77,10 @@ export async function upstreamJson<T>(integration: IntegrationName, url: string 
     throw upstream(integration, `${LABELS[integration]} a répondu avec le statut ${res.status}`, { status: res.status });
   }
   if (res.status === 204) return undefined as T;
+  const text = await readBodyLimited(integration, res);
   try {
-    return (await res.json()) as T;
-  } catch (err) {
-    if (err instanceof AppError) throw err;
+    return JSON.parse(text) as T;
+  } catch {
     throw upstream(integration, `Réponse illisible de ${LABELS[integration]}`);
   }
 }

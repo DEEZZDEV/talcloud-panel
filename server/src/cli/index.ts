@@ -30,6 +30,7 @@ import { getPanelAllowlist, setPanelAllowlist } from '../modules/auth/ip-allowli
 import { lockRemainingSeconds, unknownDeviceLockRemainingSeconds } from '../modules/auth/lockout.js';
 import { passwordProblems, PASSWORD_MIN_LENGTH } from '../modules/auth/passwords.js';
 import { matchTotpStep, newTotpSecret, totpUri } from '../modules/auth/totp.js';
+import { removeAllPush } from '../modules/notifications/push.js';
 import { findUserByIdentifier, listUsers, MAX_ADMINS, type UserRow } from '../modules/auth/users.js';
 
 class CliError extends Error {}
@@ -253,6 +254,8 @@ const commands: Record<string, { usage: string; description: string; run: (args:
       const problems = await setPassword(user, password);
       if (problems.length) throw new CliError(`Mot de passe refusé : ${problems.join(', ')}`);
       const revoked = revokeUserSessions(user.id);
+      // Aucun appareil ne garde d'abonnement push après une commande de secours.
+      removeAllPush(user.id);
       audit(null, { action: 'cli.password.reset', target: `compte ${user.username}`, userId: user.id, details: { revokedSessions: revoked } });
       print(`Mot de passe modifié. Sessions fermées : ${revoked}.`);
       cliAlert(`Mot de passe réinitialisé : ${user.username}`, `Le mot de passe du compte ${user.username} a été réinitialisé.`, user);
@@ -269,6 +272,8 @@ const commands: Record<string, { usage: string; description: string; run: (args:
       setTotpSecret(user.id, secret, step);
       const codes = regenerateBackupCodes(user.id);
       const revoked = revokeUserSessions(user.id);
+      // Aucun appareil ne garde d'abonnement push après une commande de secours.
+      removeAllPush(user.id);
       audit(null, { action: 'cli.totp.reset', target: `compte ${user.username}`, userId: user.id, details: { revokedSessions: revoked } });
       print();
       print(`2FA réinitialisée. Sessions fermées : ${revoked}.`);
@@ -283,6 +288,8 @@ const commands: Record<string, { usage: string; description: string; run: (args:
     async run([identifier]) {
       const user = requireUser(identifier);
       const revoked = revokeUserSessions(user.id);
+      // Aucun appareil ne garde d'abonnement push après une commande de secours.
+      removeAllPush(user.id);
       audit(null, { action: 'cli.sessions.revoke', target: `compte ${user.username}`, userId: user.id, details: { revokedSessions: revoked } });
       print(`Sessions fermées pour « ${user.username} » : ${revoked}.`);
     },

@@ -424,6 +424,22 @@ export interface PushSubscribeRequest {
 export interface PushUnsubscribeRequest {
   endpoint: string;
 }
+/**
+ * GET /api/push/subscriptions — abonnements push du compte connecté (un par navigateur abonné).
+ * DELETE /api/push/subscriptions/:id (step-up) — retire un abonnement du compte (404 sinon).
+ * Un abonnement est lié à l'appareil qui l'a créé : il est retiré automatiquement à la déconnexion de cet appareil,
+ * à la révocation de ses sessions, à l'oubli de l'appareil, et (sauf pour l'appareil courant) au changement de mot
+ * de passe, à la confirmation d'un nouveau secret 2FA et à la régénération des codes de secours.
+ * POST /api/push/subscribe exige un step-up.
+ */
+export interface PushSubscriptionInfo {
+  id: number;
+  /** Navigateur et système, ex. « Chrome 129 · Windows ». */
+  deviceLabel: string;
+  createdAt: string;
+  /** Abonnement de l'appareil courant. */
+  current: boolean;
+}
 /** Charge utile JSON reçue par le service worker (web/public/sw.js) dans l'évènement « push ». */
 export interface PushPayload {
   title: string;

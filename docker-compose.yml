@@ -39,10 +39,16 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - internal
+      internal:
+        # IP fixe : c'est la SEULE adresse dont le panel croit les en-têtes X-Forwarded-* (TRUST_PROXY).
+        ipv4_address: 172.30.0.2
 
 networks:
   internal:
+    ipam:
+      config:
+        # À changer (ici, dans ipv4_address et dans TRUST_PROXY) si ce sous-réseau est déjà utilisé sur l'hôte.
+        - subnet: 172.30.0.0/24
 
 volumes:
   panel_data:

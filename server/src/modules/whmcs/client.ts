@@ -1,5 +1,5 @@
 import { AppError, notConfigured, upstream } from '../../core/errors.js';
-import { upstreamFetch } from '../../core/http.js';
+import { upstreamFetch, MAX_UPSTREAM_BYTES, readBodyLimited } from '../../core/http.js';
 import { getSettings } from '../../core/settings.js';
 import { extractList, int, isRecord, type Raw } from './parse.js';
 
@@ -113,9 +113,11 @@ export async function whmcsCall(action: WhmcsAction, params: Params = {}, option
     timeoutMs: options.timeoutMs ?? 30_000,
   });
 
+  // GetTransactions peut renvoyer tout l'historique d'un coup : plafond plus large que le défaut, mais borné.
+  const raw = await readBodyLimited('whmcs', res, 4 * MAX_UPSTREAM_BYTES);
   let body: unknown;
   try {
-    body = JSON.parse(await res.text());
+    body = JSON.parse(raw);
   } catch {
     body = undefined;
   }

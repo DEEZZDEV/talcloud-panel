@@ -277,6 +277,26 @@ describe('expiration des sessions', () => {
     expect((await control.get('/api/test/protected')).status).toBe(200);
   });
 
+  it('seules les requêtes du panel ayant passé tous les contrôles prolongent la session (Sec-Fetch-Site, CSRF)', async () => {
+    const sameOrigin = new Browser(app, uniqueIp());
+    const crossSite = new Browser(app, uniqueIp());
+    const refused = new Browser(app, uniqueIp());
+    await sameOrigin.login(alice);
+    await crossSite.login(alice);
+    await refused.login(alice);
+    db.prepare('UPDATE sessions SET last_seen_at = ? WHERE revoked_at IS NULL').run(Date.now());
+
+    advance(10 * MIN);
+    expect((await sameOrigin.get('/api/test/protected', { 'sec-fetch-site': 'same-origin' })).status).toBe(200);
+    expect((await crossSite.get('/api/test/protected', { 'sec-fetch-site': 'cross-site' })).status).toBe(200);
+    expect((await refused.post('/api/test/mutate', {}, { csrf: null })).status).toBe(403);
+
+    advance(6 * MIN);
+    expect((await sameOrigin.get('/api/test/protected')).status).toBe(200);
+    expect((await crossSite.get('/api/test/protected')).status).toBe(401);
+    expect((await refused.get('/api/test/protected')).status).toBe(401);
+  });
+
   it('expiration absolue : même active en continu, la session s’arrête après SESSION_MAX_HOURS', async () => {
     const browser = new Browser(app, uniqueIp());
     const session = await browser.login(alice);

@@ -560,7 +560,7 @@ describe('notify()', () => {
     setNotificationSettings({ discordEnabled: true, discordWebhookUrl: DISCORD_URL });
     const browser = new Browser(app, uniqueIp());
     await browser.login(alice);
-    await subscribePush(browser, 'https://fcm.googleapis.com/fcm/send/echec');
+    await subscribePush(browser, alice, 'https://fcm.googleapis.com/fcm/send/echec');
     fetchMock.mockReset();
     fetchMock.mockImplementation(async () => {
       throw upstream('notifications', 'Impossible de contacter notifications');
@@ -743,7 +743,9 @@ function pushKeys(): { p256dh: string; auth: string } {
   return { p256dh: ecdh.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') };
 }
 
-async function subscribePush(browser: Browser, endpoint: string, keys = pushKeys()) {
+/** Abonne le navigateur (le step-up exigé par la route est obtenu d'abord). */
+async function subscribePush(browser: Browser, admin: TestAdmin, endpoint: string, keys = pushKeys()) {
+  expect((await browser.stepUp(admin)).status).toBe(200);
   const res = await browser.post('/api/push/subscribe', { endpoint, expirationTime: null, keys });
   expect(res.status).toBe(200);
   return keys;
@@ -773,7 +775,7 @@ describe('push navigateur', () => {
 
   it('abonnement : rattaché à l’utilisateur courant, clés chiffrées en base, point de terminaison validé', async () => {
     const endpoint = 'https://fcm.googleapis.com/fcm/send/dEvIcE-1:APA91b';
-    const keys = await subscribePush(aliceBrowser, endpoint);
+    const keys = await subscribePush(aliceBrowser, alice, endpoint);
     const row = db.prepare('SELECT * FROM push_subscriptions WHERE endpoint = ?').get(endpoint) as { user_id: number; keys_enc: string; user_agent: string };
     expect(row.user_id).toBe(alice.user.id);
     expect(row.user_agent).toBe(CHROME_UA);
@@ -782,7 +784,7 @@ describe('push navigateur', () => {
     expect(row.keys_enc).not.toContain(keys.auth);
 
     // Réabonnement du même navigateur : pas de doublon.
-    await subscribePush(aliceBrowser, endpoint);
+    await subscribePush(aliceBrowser, alice, endpoint);
     expect((db.prepare('SELECT COUNT(*) AS c FROM push_subscriptions').get() as { c: number }).c).toBe(1);
 
     const valid = pushKeys();
@@ -813,7 +815,7 @@ describe('push navigateur', () => {
 
   it('désabonnement : seulement ses propres abonnements', async () => {
     const endpoint = 'https://fcm.googleapis.com/fcm/send/alice-device';
-    await subscribePush(aliceBrowser, endpoint);
+    await subscribePush(aliceBrowser, alice, endpoint);
     const byBob = await bobBrowser.post<{ removed: boolean }>('/api/push/unsubscribe', { endpoint });
     expect(byBob.status).toBe(200);
     expect(byBob.body.data.removed).toBe(false);
@@ -827,9 +829,9 @@ describe('push navigateur', () => {
     const aliceEndpoint = 'https://fcm.googleapis.com/fcm/send/alice';
     const bobEndpoint = 'https://updates.push.services.mozilla.com/wpush/v2/bob';
     const goneEndpoint = 'https://fcm.googleapis.com/fcm/send/expire';
-    await subscribePush(aliceBrowser, aliceEndpoint);
-    await subscribePush(bobBrowser, bobEndpoint);
-    await subscribePush(bobBrowser, goneEndpoint);
+    await subscribePush(aliceBrowser, alice, aliceEndpoint);
+    await subscribePush(bobBrowser, bob, bobEndpoint);
+    await subscribePush(bobBrowser, bob, goneEndpoint);
     fetchMock.mockImplementation(async (_integration: string, url: string) => (url === goneEndpoint ? { ok: false, status: 410, body: null } : { ok: true, status: 201, body: null }));
 
     // Notification commune : les trois abonnements sont sollicités.
@@ -868,8 +870,8 @@ describe('push navigateur', () => {
     expect(none.body.data.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
 
-    await subscribePush(aliceBrowser, 'https://fcm.googleapis.com/fcm/send/alice-test');
-    await subscribePush(bobBrowser, 'https://fcm.googleapis.com/fcm/send/bob-test');
+    await subscribePush(aliceBrowser, alice, 'https://fcm.googleapis.com/fcm/send/alice-test');
+    await subscribePush(bobBrowser, bob, 'https://fcm.googleapis.com/fcm/send/bob-test');
     const sent = await aliceBrowser.post<SettingsTestResult>('/api/push/test');
     expect(sent.body.data).toEqual({ ok: true, message: 'Notification d’essai envoyée à 1 appareil(s)' });
     expect(fetchMock.mock.calls.map((call) => call[1])).toEqual(['https://fcm.googleapis.com/fcm/send/alice-test']);

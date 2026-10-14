@@ -6,6 +6,7 @@ import { securityAlert } from '../../core/alerts.js';
 import { audit } from '../../core/audit.js';
 import { accountLocked, badRequest, notFound, stepUpRequired, unauthenticated } from '../../core/errors.js';
 import { db } from '../../db/index.js';
+import { removePushExceptDevice, removePushForDevice } from '../notifications/push.js';
 import { regenerateBackupCodes, setPassword } from './admin.js';
 import { backupCodesStatus } from './backup-codes.js';
 import { deviceLabel } from './device.js';
@@ -29,6 +30,9 @@ function account(request: FastifyRequest): UserRow {
   if (!request.auth || !user) throw unauthenticated();
   return user;
 }
+
+/** Appareil de la session courante (forme de sessions.device_id), ou null. */
+const currentDeviceId = (request: FastifyRequest): string | null => requestSession(request)?.device_id ?? null;
 
 const pageSchema = z.object({
   page: z.coerce.number().int().min(1).max(100_000).default(1),
@@ -102,12 +106,15 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
     const user = account(request);
     const { id } = sessionIdSchema.parse(request.params);
     const current = id === request.auth?.sessionId;
+    const target = db.prepare('SELECT device_id FROM sessions WHERE id = ? AND user_id = ?').get(id, user.id) as { device_id: string | null } | undefined;
     // Journalisé avant la révocation : l'entrée porte encore l'identifiant de la session appelante.
     if (!revokeSession(user.id, id)) {
       audit(request, { action: 'security.session.revoke', target: `session ${id}`, success: false });
       throw notFound('Session introuvable');
     }
-    audit(request, { action: 'security.session.revoke', target: `session ${id}`, details: { current } });
+    // L'appareil de la session révoquée cesse de recevoir les notifications push.
+    const pushRemoved = removePushForDevice(user.id, target?.device_id);
+    audit(request, { action: 'security.session.revoke', target: `session ${id}`, details: { current, pushRemoved } });
     if (current) clearSessionCookie(reply);
     return { data: { ok: true } };
   });
@@ -115,7 +122,8 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
   app.post('/api/security/sessions/revoke-others', async (request) => {
     const user = account(request);
     const revoked = revokeUserSessions(user.id, request.auth?.sessionId ?? null);
-    audit(request, { action: 'security.session.revoke_others', details: { revoked } });
+    const pushRemoved = removePushExceptDevice(user.id, currentDeviceId(request));
+    audit(request, { action: 'security.session.revoke_others', details: { revoked, pushRemoved } });
     return { data: { revoked } };
   });
 
@@ -200,7 +208,8 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
       return sessions.map((s) => s.id);
     })();
     for (const sessionId of revoked) revokeSession(user.id, sessionId);
-    audit(request, { action: 'security.device.forget', target: `appareil #${id} (${device.label})`, details: { revokedSessions: revoked.length } });
+    const pushRemoved = removePushForDevice(user.id, device.device_hash);
+    audit(request, { action: 'security.device.forget', target: `appareil #${id} (${device.label})`, details: { revokedSessions: revoked.length, pushRemoved } });
     return { data: { ok: true } };
   });
 
@@ -286,7 +295,8 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
     });
 
     const revoked = revokeUserSessions(user.id, request.auth?.sessionId ?? null);
-    audit(request, { action: 'security.password.change', details: { revokedSessions: revoked } });
+    const pushRemoved = removePushExceptDevice(user.id, currentDeviceId(request));
+    audit(request, { action: 'security.password.change', details: { revokedSessions: revoked, pushRemoved } });
     securityAlert({
       kind: 'password_changed',
       severity: 'critical',
@@ -331,14 +341,21 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
     const step = matchTotpStep(secret, body.code, 0);
     if (step === null) throw sessionAuthFailure(request, reply, user, 'totp_confirm', 'Code 2FA incorrect');
 
-    // Activation atomique : seulement si le secret en attente est toujours celui qui vient d'être vérifié.
-    const activated = db
-      .prepare('UPDATE users SET totp_secret_enc = ?, totp_pending_enc = NULL, totp_pending_at = NULL, totp_last_step = ? WHERE id = ? AND totp_pending_enc = ?')
-      .run(encryptTotpSecret(user.id, secret), step, user.id, user.totp_pending_enc).changes;
+    // Activation atomique : seulement si le secret en attente est toujours celui qui vient d'être vérifié. Dans la
+    // même transaction, les connexions en cours du compte sont abandonnées (une connexion déjà passée au second
+    // facteur avec l'ancien secret ne doit pas survivre à son remplacement).
+    const activated = db.transaction(() => {
+      const changes = db
+        .prepare('UPDATE users SET totp_secret_enc = ?, totp_pending_enc = NULL, totp_pending_at = NULL, totp_last_step = ? WHERE id = ? AND totp_pending_enc = ?')
+        .run(encryptTotpSecret(user.id, secret), step, user.id, user.totp_pending_enc).changes;
+      if (changes === 1) db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(user.id);
+      return changes;
+    })();
     if (activated !== 1) throw badRequest('Le secret en attente a changé : relancez la régénération');
 
     const revoked = revokeUserSessions(user.id, request.auth?.sessionId ?? null);
-    audit(request, { action: 'security.totp.confirm', details: { revokedSessions: revoked } });
+    const pushRemoved = removePushExceptDevice(user.id, currentDeviceId(request));
+    audit(request, { action: 'security.totp.confirm', details: { revokedSessions: revoked, pushRemoved } });
     securityAlert({
       kind: 'totp_changed',
       severity: 'critical',
@@ -357,8 +374,14 @@ export default async function securityRoutes(app: FastifyInstance): Promise<void
 
   app.post('/api/security/backup-codes/regenerate', { config: { stepUp: true } }, async (request): Promise<{ data: BackupCodes }> => {
     const user = account(request);
-    const codes = regenerateBackupCodes(user.id);
-    audit(request, { action: 'security.backup_codes.regenerate' });
+    // Nouveaux codes et abandon des connexions en cours (dont celles passées au second facteur avec un ancien code).
+    const codes = db.transaction(() => {
+      const fresh = regenerateBackupCodes(user.id);
+      db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(user.id);
+      return fresh;
+    })();
+    const pushRemoved = removePushExceptDevice(user.id, currentDeviceId(request));
+    audit(request, { action: 'security.backup_codes.regenerate', details: { pushRemoved } });
     securityAlert({
       kind: 'backup_codes_regenerated',
       severity: 'warning',

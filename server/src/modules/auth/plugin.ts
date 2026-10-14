@@ -212,9 +212,8 @@ export default fp(
       const sessionToken = request.cookies?.[SESSION_COOKIE];
       const resolved = resolveSession(sessionToken, now);
       if (resolved) {
-        const background = routeConfig.background === true || headerValue(request.headers['x-tc-background']) === '1';
-        // Une requête d'arrière-plan ne prolonge pas la session : l'expiration d'inactivité reste effective.
-        if (!background) touchSession(resolved.row, now);
+        // L'activité n'est PAS enregistrée ici : seule une requête qui a passé tous les contrôles prolonge la
+        // session (voir le hook preHandler).
         bindRequestSession(request, resolved.row);
         request.auth = { user: toAdminUser(resolved.user), sessionId: resolved.row.id, stepUpUntil: resolved.row.step_up_until };
       } else {
@@ -267,6 +266,16 @@ export default fp(
       request.auth.stepUpUntil = session.step_up_until;
       const routeConfig: FastifyContextConfig = (request.is404 ? undefined : request.routeOptions.config) ?? {};
       if (routeConfig.stepUp === true && (!session.step_up_until || session.step_up_until <= Date.now())) throw stepUpRequired();
+
+      // Tous les contrôles sont passés : la requête prolonge la session, sauf
+      //  - requête d'arrière-plan (route `background`, en-tête X-TC-Background: 1) : l'inactivité reste effective ;
+      //  - requête que le navigateur déclare émise par un autre site ou sous-domaine (Sec-Fetch-Site ≠ same-origin /
+      //    none) : SameSite=Strict laisse passer le cookie entre sous-domaines d'un même site, mais une page tierce
+      //    ne doit pas pouvoir garder une session inactive en vie.
+      const background = routeConfig.background === true || headerValue(request.headers['x-tc-background']) === '1';
+      const fetchSite = headerValue(request.headers['sec-fetch-site']);
+      const foreign = fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none';
+      if (!background && !foreign) touchSession(session, Date.now());
     });
 
     // Ménage périodique (sessions et challenges expirés, anciens échecs).
